@@ -1,0 +1,11 @@
+[package]
+name = "p1-24531"
+version = "0.1.0"
+edition = "2024"
+
+
+[profile.dev]
+opt-level = 3
+debug = false
+
+[dependencies]
