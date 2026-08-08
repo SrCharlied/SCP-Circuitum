@@ -38,26 +38,32 @@ fn is_walkable(maze: &Maze, x: f32, y: f32, block_size: usize) -> bool {
     true
 }
 
-pub fn process_events(window: &Window, player: &mut Player, maze: &Maze, block_size: usize) {
-    const MOVE_SPEED: f32 = 10.0;
-    const ROTATION_SPEED: f32 = PI / 50.0;
+pub fn process_events(
+    window: &Window,
+    player: &mut Player,
+    maze: &Maze,
+    block_size: usize,
+    delta_time: f32,
+) {
+    const MOVE_SPEED: f32 = 600.0;
+    const ROTATION_SPEED: f32 = PI * 1.2;
 
     if window.is_key_down(Key::A) {
-        player.a -= ROTATION_SPEED;
+        player.a -= ROTATION_SPEED * delta_time;
     }
 
     if window.is_key_down(Key::D) {
-        player.a += ROTATION_SPEED;
+        player.a += ROTATION_SPEED * delta_time;
     }
 
     let mut movement = 0.0;
 
     if window.is_key_down(Key::W) {
-        movement += MOVE_SPEED;
+        movement += MOVE_SPEED * delta_time;
     }
 
     if window.is_key_down(Key::S) {
-        movement -= MOVE_SPEED;
+        movement -= MOVE_SPEED * delta_time;
     }
 
     if movement != 0.0 {
