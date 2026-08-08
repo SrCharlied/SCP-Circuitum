@@ -6,7 +6,7 @@ pub fn cast_ray(
     player: &Player,
     angulo: f32,
     block_size: usize,
-) -> Option<(f32, char)>{
+) -> Option<(f32, char)> {
     let mut distancia = 0.0;
 
     loop {
@@ -23,7 +23,7 @@ pub fn cast_ray(
         let map_x = x / block_size;
         let map_y = y / block_size;
 
-        if map_y >= maze.len() || map_x >= maze[map_y].len(){
+        if map_y >= maze.len() || map_x >= maze[map_y].len() {
             return None;
         }
 
