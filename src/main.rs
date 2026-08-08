@@ -13,6 +13,8 @@ use crate::maze::{load_maze, Maze};
 use crate::player::{process_events, Player};
 
 const BLOCK_SIZE: usize = 100;
+const MINIMAP_CELL_SIZE: usize = 8;
+const MINIMAP_MARGIN: usize = 20;
 
 /// Cantidad de rayos que se lanzan en abanico para formar el campo de visión.
 const NUM_RAYS: usize = 5;
@@ -40,6 +42,23 @@ fn draw_cell(framebuffer: &mut Framebuffer, xo: usize, yo: usize, cell: char) {
     for x in xo..xo + BLOCK_SIZE {
         for y in yo..yo + BLOCK_SIZE {
             framebuffer.point(x, y);
+        }
+    }
+}
+
+fn fill_rect(
+    framebuffer: &mut Framebuffer,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    color: u32,
+) {
+    framebuffer.set_current_color(color);
+
+    for px in x..x + width {
+        for py in y..y + height {
+            framebuffer.point(px, py);
         }
     }
 }
@@ -108,6 +127,102 @@ fn render_3d(
             }
         }
     }
+}
+
+fn render_minimap(
+    framebuffer: &mut Framebuffer,
+    maze: &Maze,
+    player: &Player,
+) {
+    if maze.is_empty() {
+        return;
+    }
+
+    let maze_columns = maze
+        .iter()
+        .map(|row| row.len())
+        .max()
+        .unwrap_or(0);
+
+    let minimap_width =
+        maze_columns * MINIMAP_CELL_SIZE;
+
+    let minimap_height =
+        maze.len() * MINIMAP_CELL_SIZE;
+
+    // Coloca el minimapa en la esquina superior derecha.
+    let offset_x = framebuffer
+        .width
+        .saturating_sub(
+            minimap_width + MINIMAP_MARGIN,
+        );
+
+    let offset_y = MINIMAP_MARGIN;
+
+    // Fondo ligeramente mayor para crear un marco.
+    let panel_x = offset_x.saturating_sub(4);
+    let panel_y = offset_y.saturating_sub(4);
+
+    fill_rect(
+        framebuffer,
+        panel_x,
+        panel_y,
+        minimap_width + 8,
+        minimap_height + 8,
+        0x111118,
+    );
+
+    // Dibujar todas las celdas.
+    for (row, line) in maze.iter().enumerate() {
+        for (col, &cell) in line.iter().enumerate() {
+            let color = match cell {
+                ' ' => 0x292933,
+                'g' | 'G' => 0x00FF00,
+                _ => cell_color(cell),
+            };
+
+            let screen_x =
+                offset_x + col * MINIMAP_CELL_SIZE;
+
+            let screen_y =
+                offset_y + row * MINIMAP_CELL_SIZE;
+
+            fill_rect(
+                framebuffer,
+                screen_x,
+                screen_y,
+                MINIMAP_CELL_SIZE,
+                MINIMAP_CELL_SIZE,
+                color,
+            );
+        }
+    }
+
+    // Convertir la posición del jugador del mundo
+    // a la escala reducida del minimapa.
+    let minimap_scale =
+        MINIMAP_CELL_SIZE as f32
+            / BLOCK_SIZE as f32;
+
+    let player_x =
+        offset_x
+            + (player.pos.x * minimap_scale)
+                as usize;
+
+    let player_y =
+        offset_y
+            + (player.pos.y * minimap_scale)
+            as usize;
+
+    // Marcador del jugador.
+    fill_rect(
+        framebuffer,
+        player_x.saturating_sub(2),
+        player_y.saturating_sub(2),
+        5,
+        5,
+        0xFFFF00,
+    );
 }
 
 fn draw_debug_ray(
@@ -216,10 +331,24 @@ fn main() {
 
         framebuffer.clear();
 
-        if window.is_key_down(Key::M){
-            render_top_down(&mut framebuffer, &maze, &player);
-        } else{
-            render_3d(&mut framebuffer, &maze, &player);    
+        if window.is_key_down(Key::M) {
+            render_top_down(
+                &mut framebuffer,
+                &maze,
+                &player,
+            );
+        } else {
+            render_3d(
+                &mut framebuffer,
+                &maze,
+                &player,
+            );
+
+            render_minimap(
+                &mut framebuffer,
+                &maze,
+                &player,
+            );
         }
 
         window
