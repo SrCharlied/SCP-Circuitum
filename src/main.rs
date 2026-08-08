@@ -119,7 +119,7 @@ fn render_3d(
                     as usize;
 
             // Dibujar el techo.
-            framebuffer.set_current_color(0x141821);
+            framebuffer.set_current_color(0x0000FF);
 
             for y in 0..top_clamped {
                 framebuffer.point(i, y);
