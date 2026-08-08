@@ -118,11 +118,26 @@ fn render_3d(
                 bottom.max(0.0).min((height - 1) as f32)
                     as usize;
 
+            // Dibujar el techo.
+            framebuffer.set_current_color(0x141821);
+
+            for y in 0..top_clamped {
+                framebuffer.point(i, y);
+            }
+
+            // Dibujar la pared.
             framebuffer.set_current_color(
                 cell_color(wall),
             );
 
             for y in top_clamped..=bottom_clamped {
+                framebuffer.point(i, y);
+            }
+
+            // Dibujar el suelo.
+            framebuffer.set_current_color(0x292B30);
+
+            for y in bottom_clamped.saturating_add(1)..height {
                 framebuffer.point(i, y);
             }
         }
