@@ -24,6 +24,18 @@ impl GameSettings {
     pub fn target_frame_time(&self) -> Duration {
         Duration::from_secs_f64(1.0 / self.target_fps() as f64)
     }
+
+    pub fn select_next_fps(&mut self) {
+        self.selected_fps_index = (self.selected_fps_index + 1) % FPS_OPTIONS.len();
+    }
+
+    pub fn select_previous_fps(&mut self) {
+        if self.selected_fps_index == 0 {
+            self.selected_fps_index = FPS_OPTIONS.len() - 1;
+        } else {
+            self.selected_fps_index -= 1;
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

@@ -296,15 +296,15 @@ pub fn render_top_down(framebuffer: &mut Framebuffer, maze: &Maze, player: &Play
     }
 }
 
-pub fn render_pause_menu(framebuffer: &mut Framebuffer) {
-    let panel_width = 460;
-    let panel_height = 220;
+pub fn render_pause_menu(framebuffer: &mut Framebuffer, target_fps: u32) {
+    let panel_width = 520;
+    let panel_height = 320;
 
     let panel_x = framebuffer.width.saturating_sub(panel_width) / 2;
 
     let panel_y = framebuffer.height.saturating_sub(panel_height) / 2;
 
-    // Borde claro.
+    // Borde.
     fill_rect(
         framebuffer,
         panel_x,
@@ -314,7 +314,7 @@ pub fn render_pause_menu(framebuffer: &mut Framebuffer) {
         0xFFFFFF,
     );
 
-    // Interior oscuro.
+    // Interior.
     fill_rect(
         framebuffer,
         panel_x + 4,
@@ -335,24 +335,59 @@ pub fn render_pause_menu(framebuffer: &mut Framebuffer) {
         framebuffer,
         title,
         title_x,
-        panel_y + 40,
+        panel_y + 35,
         title_scale,
         0xFFFFFF,
     );
 
-    let hint = "ESC - CONTINUAR";
-    let hint_scale = 2;
+    let fps_option = format!("< FPS: {} >", target_fps,);
 
-    let hint_width = hint.chars().count() * 9 * hint_scale;
+    let option_scale = 2;
 
-    let hint_x = panel_x + panel_width.saturating_sub(hint_width) / 2;
+    let option_width = fps_option.chars().count() * 9 * option_scale;
+
+    let option_x = panel_x + panel_width.saturating_sub(option_width) / 2;
 
     draw_text(
         framebuffer,
-        hint,
-        hint_x,
-        panel_y + 130,
-        hint_scale,
+        &fps_option,
+        option_x,
+        panel_y + 120,
+        option_scale,
+        0xFFFF00,
+    );
+
+    let change_hint = "IZQ / DER - CAMBIAR";
+
+    let change_hint_scale = 2;
+
+    let change_hint_width = change_hint.chars().count() * 9 * change_hint_scale;
+
+    let change_hint_x = panel_x + panel_width.saturating_sub(change_hint_width) / 2;
+
+    draw_text(
+        framebuffer,
+        change_hint,
+        change_hint_x,
+        panel_y + 180,
+        change_hint_scale,
+        0xAAAAAA,
+    );
+
+    let continue_hint = "ESC - CONTINUAR";
+
+    let continue_hint_scale = 2;
+
+    let continue_hint_width = continue_hint.chars().count() * 9 * continue_hint_scale;
+
+    let continue_hint_x = panel_x + panel_width.saturating_sub(continue_hint_width) / 2;
+
+    draw_text(
+        framebuffer,
+        continue_hint,
+        continue_hint_x,
+        panel_y + 245,
+        continue_hint_scale,
         0xAAAAAA,
     );
 }

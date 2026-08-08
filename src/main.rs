@@ -46,7 +46,7 @@ fn main() {
 
     let mut fps_text = String::from("FPS: --");
 
-    let settings = GameSettings::default();
+    let mut settings = GameSettings::default();
 
     let mut game_state = GameState::Playing;
 
@@ -57,6 +57,16 @@ fn main() {
 
         if window.is_key_pressed(Key::Escape, KeyRepeat::No) {
             game_state.toggle_pause();
+        }
+
+        if game_state == GameState::Paused {
+            if window.is_key_pressed(Key::Right, KeyRepeat::No) {
+                settings.select_next_fps();
+            }
+
+            if window.is_key_pressed(Key::Left, KeyRepeat::No) {
+                settings.select_previous_fps();
+            }
         }
 
         previous_frame = frame_start;
@@ -90,7 +100,7 @@ fn main() {
         }
 
         if game_state == GameState::Paused {
-            render_pause_menu(&mut framebuffer);
+            render_pause_menu(&mut framebuffer, settings.target_fps());
         }
 
         window
