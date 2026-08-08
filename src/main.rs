@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use crate::framebuffer::Framebuffer;
 use crate::maze::load_maze;
 use crate::player::process_events;
-use crate::renderer::{render_3d, render_minimap, render_top_down};
+use crate::renderer::{draw_text, render_3d, render_minimap, render_top_down};
 
 const BLOCK_SIZE: usize = 100;
 
@@ -72,6 +72,8 @@ fn main() {
 
             render_minimap(&mut framebuffer, &maze, &player);
         }
+
+        draw_text(&mut framebuffer, "SCP CIRCUITUM 123", 20, 20, 2, 0xFFFFFF);
 
         window
             .update_with_buffer(&framebuffer.buffer, framebuffer_width, framebuffer_height)

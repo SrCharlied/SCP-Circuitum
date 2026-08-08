@@ -3,6 +3,7 @@ use crate::framebuffer::Framebuffer;
 use crate::maze::Maze;
 use crate::player::Player;
 use crate::{BLOCK_SIZE, FOV};
+use font8x8::{BASIC_FONTS, UnicodeFonts};
 
 const MINIMAP_CELL_SIZE: usize = 8;
 const MINIMAP_MARGIN: usize = 20;
@@ -94,6 +95,69 @@ fn fill_rect(
         for py in y..y + height {
             framebuffer.point(px, py);
         }
+    }
+}
+
+fn draw_char(
+    framebuffer: &mut Framebuffer,
+    character: char,
+    x: usize,
+    y: usize,
+    scale: usize,
+    color: u32,
+) {
+    if scale == 0 {
+        return;
+    }
+
+    let Some(glyph) = BASIC_FONTS.get(character) else {
+        return;
+    };
+
+    for (row, bits) in glyph.iter().enumerate() {
+        for col in 0..8 {
+            let pixel_is_active = (*bits & (1u8 << col)) != 0;
+
+            if pixel_is_active {
+                fill_rect(
+                    framebuffer,
+                    x + col * scale,
+                    y + row * scale,
+                    scale,
+                    scale,
+                    color,
+                );
+            }
+        }
+    }
+}
+
+pub fn draw_text(
+    framebuffer: &mut Framebuffer,
+    text: &str,
+    x: usize,
+    y: usize,
+    scale: usize,
+    color: u32,
+) {
+    if scale == 0 {
+        return;
+    }
+
+    let initial_x = x;
+    let mut cursor_x = x;
+    let mut cursor_y = y;
+
+    for character in text.chars() {
+        if character == '\n' {
+            cursor_x = initial_x;
+            cursor_y += 9 * scale;
+            continue;
+        }
+
+        draw_char(framebuffer, character, cursor_x, cursor_y, scale, color);
+
+        cursor_x += 9 * scale;
     }
 }
 
