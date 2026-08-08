@@ -295,3 +295,64 @@ pub fn render_top_down(framebuffer: &mut Framebuffer, maze: &Maze, player: &Play
         }
     }
 }
+
+pub fn render_pause_menu(framebuffer: &mut Framebuffer) {
+    let panel_width = 460;
+    let panel_height = 220;
+
+    let panel_x = framebuffer.width.saturating_sub(panel_width) / 2;
+
+    let panel_y = framebuffer.height.saturating_sub(panel_height) / 2;
+
+    // Borde claro.
+    fill_rect(
+        framebuffer,
+        panel_x,
+        panel_y,
+        panel_width,
+        panel_height,
+        0xFFFFFF,
+    );
+
+    // Interior oscuro.
+    fill_rect(
+        framebuffer,
+        panel_x + 4,
+        panel_y + 4,
+        panel_width - 8,
+        panel_height - 8,
+        0x111118,
+    );
+
+    let title = "PAUSA";
+    let title_scale = 3;
+
+    let title_width = title.chars().count() * 9 * title_scale;
+
+    let title_x = panel_x + panel_width.saturating_sub(title_width) / 2;
+
+    draw_text(
+        framebuffer,
+        title,
+        title_x,
+        panel_y + 40,
+        title_scale,
+        0xFFFFFF,
+    );
+
+    let hint = "ESC - CONTINUAR";
+    let hint_scale = 2;
+
+    let hint_width = hint.chars().count() * 9 * hint_scale;
+
+    let hint_x = panel_x + panel_width.saturating_sub(hint_width) / 2;
+
+    draw_text(
+        framebuffer,
+        hint,
+        hint_x,
+        panel_y + 130,
+        hint_scale,
+        0xAAAAAA,
+    );
+}
