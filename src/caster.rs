@@ -1,35 +1,38 @@
-use crate::framebuffer::Framebuffer;
 use crate::maze::Maze;
 use crate::player::Player;
 
 pub fn cast_ray(
-    framebuffer: &mut Framebuffer,
     maze: &Maze,
     player: &Player,
-    a: f32,
+    angulo: f32,
     block_size: usize,
-) {
-    let mut d = 0.0;
-
-    framebuffer.set_current_color(0xFFDDDD);
+) -> Option<(f32, char)>{
+    let mut distancia = 0.0;
 
     loop {
-        let x = (player.pos.x + d * a.cos()) as usize;
-        let y = (player.pos.y + d * a.sin()) as usize;
+        let world_x = player.pos.x + distancia * angulo.cos();
+        let world_y = player.pos.y + distancia * angulo.sin();
 
-        let i = x / block_size;
-        let j = y / block_size;
-
-        if j >= maze.len() || i >= maze[j].len() {
-            return;
+        if world_x < 0.0 || world_y < 0.0 {
+            return None;
         }
 
-        if maze[j][i] != ' ' {
-            return;
+        let x = world_x as usize;
+        let y = world_y as usize;
+
+        let map_x = x / block_size;
+        let map_y = y / block_size;
+
+        if map_y >= maze.len() || map_x >= maze[map_y].len(){
+            return None;
         }
 
-        framebuffer.point(x, y);
+        let cell = maze[map_y][map_x];
 
-        d += 1.0;
+        if cell != ' ' {
+            return Some((distancia, cell));
+        }
+
+        distancia += 1.0;
     }
 }

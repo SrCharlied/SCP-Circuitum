@@ -44,7 +44,101 @@ fn draw_cell(framebuffer: &mut Framebuffer, xo: usize, yo: usize, cell: char) {
     }
 }
 
-fn render(framebuffer: &mut Framebuffer, maze: &Maze, player: &Player) {
+fn render_3d(
+    framebuffer: &mut Framebuffer,
+    maze: &Maze,
+    player: &Player,
+) {
+    let width = framebuffer.width;
+    let height = framebuffer.height;
+
+    let horizon = height as f32 / 2.0;
+
+    let proyeccion_distancia =
+        (width as f32 / 2.0) / (FOV / 2.0).tan();
+
+    let delta_beta =
+        FOV / (width - 1) as f32;
+
+    for i in 0..width {
+        let beta =
+            -FOV / 2.0 + delta_beta * i as f32;
+
+        let ray_angle =
+            player.a + beta;
+
+        if let Some((raw_distance, wall)) =
+            cast_ray(maze, player, ray_angle, BLOCK_SIZE)
+        {
+            let distancia_corregida =
+                raw_distance * beta.cos();
+
+            // Evita dividir entre cero si el jugador queda
+            // demasiado cerca o dentro de una pared.
+            if distancia_corregida <= 0.0 {
+                continue;
+            }
+
+            let wall_height =
+                (BLOCK_SIZE as f32 / distancia_corregida)
+                    * proyeccion_distancia;
+
+            let top =
+                horizon - wall_height / 2.0;
+
+            let bottom =
+                horizon + wall_height / 2.0;
+
+            // Recortar la estaca para que quede dentro
+            // de los límites verticales del framebuffer.
+            let top_clamped =
+                top.max(0.0).min((height - 1) as f32)
+                    as usize;
+
+            let bottom_clamped =
+                bottom.max(0.0).min((height - 1) as f32)
+                    as usize;
+
+            framebuffer.set_current_color(
+                cell_color(wall),
+            );
+
+            for y in top_clamped..=bottom_clamped {
+                framebuffer.point(i, y);
+            }
+        }
+    }
+}
+
+fn draw_debug_ray(
+    framebuffer: &mut Framebuffer,
+    player: &Player,
+    angulo: f32,
+    distancia: f32,
+) {
+    framebuffer.set_current_color(0xFFDDDD);
+
+    let mut d = 0.0;
+
+    while d <= distancia {
+        let x =
+            player.pos.x + d * angulo.cos();
+
+        let y =
+            player.pos.y + d * angulo.sin();
+
+        if x >= 0.0 && y >= 0.0 {
+            framebuffer.point(
+                x as usize,
+                y as usize,
+            );
+        }
+
+        d += 1.0;
+    }
+}
+
+fn render_top_down(framebuffer: &mut Framebuffer, maze: &Maze, player: &Player) {
     for (row, line) in maze.iter().enumerate() {
         for (col, &cell) in line.iter().enumerate() {
             draw_cell(framebuffer, col * BLOCK_SIZE, row * BLOCK_SIZE, cell);
@@ -62,14 +156,29 @@ fn render(framebuffer: &mut Framebuffer, maze: &Maze, player: &Player) {
         }
     }
 
-    // lanza un abanico de rayos centrado en la dirección de vista del jugador.
-    // El campo de visión (FOV) se reparte de forma pareja entre los NUM_RAYS
-    // rayos: el primero apunta a `a - FOV/2`, el último a `a + FOV/2` y el del
-    // medio coincide con la dirección de vista.
     for i in 0..NUM_RAYS {
-        let ray_fraction = i as f32 / (NUM_RAYS - 1) as f32; // de 0.0 a 1.0
-        let angle = player.a - FOV / 2.0 + FOV * ray_fraction;
-        cast_ray(framebuffer, maze, player, angle, BLOCK_SIZE);
+    let ray_fraction =
+        i as f32 / (NUM_RAYS - 1) as f32;
+
+    let angle =
+        player.a - FOV / 2.0
+            + FOV * ray_fraction;
+
+    if let Some((distancia, _wall)) =
+        cast_ray(
+            maze,
+            player,
+            angle,
+            BLOCK_SIZE,
+        )
+    {
+        draw_debug_ray(
+            framebuffer,
+            player,
+            angle,
+            distancia,
+        );
+    }
     }
 }
 
@@ -107,7 +216,11 @@ fn main() {
 
         framebuffer.clear();
 
-        render(&mut framebuffer, &maze, &player);
+        if window.is_key_down(Key::M){
+            render_top_down(&mut framebuffer, &maze, &player);
+        } else{
+            render_3d(&mut framebuffer, &maze, &player);    
+        }
 
         window
             .update_with_buffer(&framebuffer.buffer, framebuffer_width, framebuffer_height)
