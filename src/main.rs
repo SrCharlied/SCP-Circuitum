@@ -15,7 +15,7 @@ use crate::renderer::{draw_text, render_3d, render_minimap, render_top_down};
 
 const BLOCK_SIZE: usize = 100;
 
-const TARGET_FPS: f64 = 60.0;
+const TARGET_FPS: f64 = 144.0;
 
 /// Amplitud del campo de visión (field of view), en radianes.
 const FOV: f32 = PI / 3.0;
@@ -45,6 +45,8 @@ fn main() {
 
     let mut fps_frame_count: u32 = 0;
 
+    let mut fps_text = String::from("FPS: --");
+
     while window.is_open() && !window.is_key_down(Key::Escape) {
         let frame_start = Instant::now();
 
@@ -73,7 +75,7 @@ fn main() {
             render_minimap(&mut framebuffer, &maze, &player);
         }
 
-        draw_text(&mut framebuffer, "SCP CIRCUITUM 123", 20, 20, 2, 0xFFFFFF);
+        draw_text(&mut framebuffer, &fps_text, 20, 20, 2, 0xFFFFFF);
 
         window
             .update_with_buffer(&framebuffer.buffer, framebuffer_width, framebuffer_height)
@@ -83,14 +85,13 @@ fn main() {
         let fps_elapsed = fps_timer.elapsed();
 
         if fps_elapsed >= Duration::from_secs(1) {
-            let fps = fps_frame_count as f64 / fps_elapsed.as_secs_f64();
+            let measured_fps = fps_frame_count as f64 / fps_elapsed.as_secs_f64();
 
-            window.set_title(&format!("SCP_Circuitum | FPS: {:.0}", fps,));
+            fps_text = format!("FPS: {:.0}", measured_fps,);
 
             fps_frame_count = 0;
             fps_timer = Instant::now();
         }
-
         let elapsed_frame_time = frame_start.elapsed();
 
         if elapsed_frame_time < target_frame_time {
