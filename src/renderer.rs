@@ -161,6 +161,61 @@ pub fn draw_text(
     }
 }
 
+fn draw_centered_text(
+    framebuffer: &mut Framebuffer,
+    text: &str,
+    y: usize,
+    scale: usize,
+    color: u32,
+) {
+    let text_width = text.chars().count() * 9 * scale;
+
+    let x = framebuffer.width.saturating_sub(text_width) / 2;
+
+    draw_text(framebuffer, text, x, y, scale, color);
+}
+
+pub fn render_welcome_screen(framebuffer: &mut Framebuffer) {
+    let width = framebuffer.width;
+    let height = framebuffer.height;
+
+    fill_rect(framebuffer, 0, 0, width, height, 0x08080D);
+
+    let content_y = height.saturating_sub(500) / 2;
+
+    draw_centered_text(framebuffer, "SCP CIRCUITUM", content_y, 4, 0xFFFFFF);
+
+    draw_centered_text(
+        framebuffer,
+        "ENCUENTRA LA SALIDA",
+        content_y + 100,
+        2,
+        0xAAAAAA,
+    );
+
+    draw_centered_text(framebuffer, "W / S - MOVER", content_y + 190, 2, 0xCCCCCC);
+
+    draw_centered_text(framebuffer, "A / D - GIRAR", content_y + 235, 2, 0xCCCCCC);
+
+    draw_centered_text(
+        framebuffer,
+        "M - VISTA SUPERIOR",
+        content_y + 280,
+        2,
+        0xCCCCCC,
+    );
+
+    draw_centered_text(framebuffer, "ESC - PAUSA", content_y + 325, 2, 0xCCCCCC);
+
+    draw_centered_text(
+        framebuffer,
+        "ENTER - COMENZAR",
+        content_y + 420,
+        2,
+        0xFFFF00,
+    );
+}
+
 pub fn render_minimap(framebuffer: &mut Framebuffer, maze: &Maze, player: &Player) {
     if maze.is_empty() {
         return;

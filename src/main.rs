@@ -13,7 +13,9 @@ use crate::framebuffer::Framebuffer;
 use crate::game::{GameSettings, GameState};
 use crate::maze::load_maze;
 use crate::player::process_events;
-use crate::renderer::{draw_text, render_3d, render_minimap, render_pause_menu, render_top_down};
+use crate::renderer::{
+    draw_text, render_3d, render_minimap, render_pause_menu, render_top_down, render_welcome_screen,
+};
 
 const BLOCK_SIZE: usize = 100;
 
@@ -48,15 +50,29 @@ fn main() {
 
     let mut settings = GameSettings::default();
 
-    let mut game_state = GameState::Playing;
+    let mut game_state = GameState::Welcome;
 
     while window.is_open() {
         let frame_start = Instant::now();
 
         let delta_time = frame_start.duration_since(previous_frame).as_secs_f32();
 
-        if window.is_key_pressed(Key::Escape, KeyRepeat::No) {
+        previous_frame = frame_start;
+
+        if game_state == GameState::Welcome && window.is_key_pressed(Key::Enter, KeyRepeat::No) {
+            game_state = GameState::Playing;
+
+            previous_frame = Instant::now();
+        }
+
+        if matches!(game_state, GameState::Playing | GameState::Paused)
+            && window.is_key_pressed(Key::Escape, KeyRepeat::No)
+        {
             game_state.toggle_pause();
+
+            if game_state == GameState::Playing {
+                previous_frame = Instant::now();
+            }
         }
 
         if game_state == GameState::Paused {
@@ -68,8 +84,6 @@ fn main() {
                 settings.select_previous_fps();
             }
         }
-
-        previous_frame = frame_start;
 
         if game_state == GameState::Playing {
             process_events(&window, &mut player, &maze, BLOCK_SIZE, delta_time);
@@ -87,20 +101,24 @@ fn main() {
 
         framebuffer.clear();
 
-        if window.is_key_down(Key::M) {
-            render_top_down(&mut framebuffer, &maze, &player);
+        if game_state == GameState::Welcome {
+            render_welcome_screen(&mut framebuffer);
         } else {
-            render_3d(&mut framebuffer, &maze, &player);
+            if window.is_key_down(Key::M) {
+                render_top_down(&mut framebuffer, &maze, &player);
+            } else {
+                render_3d(&mut framebuffer, &maze, &player);
 
-            render_minimap(&mut framebuffer, &maze, &player);
-        }
+                render_minimap(&mut framebuffer, &maze, &player);
+            }
 
-        if settings.show_fps {
-            draw_text(&mut framebuffer, &fps_text, 20, 20, 2, 0xFFFFFF);
-        }
+            if settings.show_fps {
+                draw_text(&mut framebuffer, &fps_text, 20, 20, 2, 0xFFFFFF);
+            }
 
-        if game_state == GameState::Paused {
-            render_pause_menu(&mut framebuffer, settings.target_fps());
+            if game_state == GameState::Paused {
+                render_pause_menu(&mut framebuffer, settings.target_fps());
+            }
         }
 
         window

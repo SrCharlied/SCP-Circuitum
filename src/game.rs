@@ -40,6 +40,7 @@ impl GameSettings {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GameState {
+    Welcome,
     Playing,
     Paused,
 }
@@ -50,6 +51,8 @@ impl GameState {
             GameState::Playing => GameState::Paused,
 
             GameState::Paused => GameState::Playing,
+
+            GameState::Welcome => GameState::Welcome,
         };
     }
 }
