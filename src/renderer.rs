@@ -778,19 +778,424 @@ pub fn render_stamina_bar(
     }
 }
 
-pub fn render_level_transition(framebuffer: &mut Framebuffer, next_level_number: usize) {
+pub fn render_level_transition(
+    framebuffer: &mut Framebuffer,
+    next_level_number: usize,
+    progress: f32,
+) {
+    let progress = progress.clamp(0.0, 1.0);
+
     let width = framebuffer.width;
     let height = framebuffer.height;
 
-    fill_rect(framebuffer, 0, 0, width, height, 0x050609);
+    // Parpadeo determinista basado en el
+    // progreso, no en el número de frames.
+    let flicker_tick = (progress * 36.0) as usize;
 
-    let content_y = height.saturating_sub(300) / 2;
+    let old_light_on = progress < 0.50 && flicker_tick % 7 != 5 && flicker_tick % 7 != 6;
 
-    draw_centered_text(framebuffer, "ELEVADOR", content_y, 5, 0xCCCCCC);
+    // Hay un pequeño periodo oscuro entre
+    // la lámpara vieja y la luz roja.
+    let red_emergency = progress >= 0.60;
 
-    draw_centered_text(framebuffer, "DESCENDIENDO...", content_y + 120, 3, 0xFFFFFF);
+    let cabin_color = if red_emergency {
+        0x26090C
+    } else if old_light_on {
+        0x202329
+    } else {
+        0x08090C
+    };
+
+    let door_color = if red_emergency {
+        0x3A1014
+    } else if old_light_on {
+        0x343942
+    } else {
+        0x111318
+    };
+
+    let door_detail_color = if red_emergency { 0x641D22 } else { 0x555C68 };
+
+    // Interior completo de la cabina.
+    fill_rect(framebuffer, 0, 0, width, height, cabin_color);
+
+    // Aura superior de la iluminación.
+    let upper_light_color = if red_emergency {
+        0x42080D
+    } else if old_light_on {
+        0x303138
+    } else {
+        0x050609
+    };
+
+    fill_rect(framebuffer, 0, 0, width, 115, upper_light_color);
+
+    // Dimensiones del conjunto de puertas.
+    let doors_width = width / 2;
+
+    let doors_x = width.saturating_sub(doors_width) / 2;
+
+    let doors_y: usize = 120;
+
+    let doors_height = height.saturating_sub(doors_y + 105);
+
+    let half_door_width = doors_width / 2;
+
+    // Puerta izquierda.
+    fill_rect(
+        framebuffer,
+        doors_x,
+        doors_y,
+        half_door_width.saturating_sub(2),
+        doors_height,
+        door_color,
+    );
+
+    // Puerta derecha.
+    fill_rect(
+        framebuffer,
+        doors_x + half_door_width + 2,
+        doors_y,
+        half_door_width.saturating_sub(2),
+        doors_height,
+        door_color,
+    );
+
+    // Marco exterior.
+    let frame_size: usize = 18;
+
+    fill_rect(
+        framebuffer,
+        doors_x.saturating_sub(frame_size),
+        doors_y.saturating_sub(frame_size),
+        doors_width + frame_size * 2,
+        frame_size,
+        door_detail_color,
+    );
+
+    fill_rect(
+        framebuffer,
+        doors_x.saturating_sub(frame_size),
+        doors_y + doors_height,
+        doors_width + frame_size * 2,
+        frame_size,
+        door_detail_color,
+    );
+
+    fill_rect(
+        framebuffer,
+        doors_x.saturating_sub(frame_size),
+        doors_y,
+        frame_size,
+        doors_height,
+        door_detail_color,
+    );
+
+    fill_rect(
+        framebuffer,
+        doors_x + doors_width,
+        doors_y,
+        frame_size,
+        doors_height,
+        door_detail_color,
+    );
+
+    // Separación central de las puertas.
+    fill_rect(
+        framebuffer,
+        doors_x + half_door_width.saturating_sub(2),
+        doors_y,
+        4,
+        doors_height,
+        0x090A0D,
+    );
+
+    // Relieves verticales de metal.
+    let left_groove_x = doors_x + doors_width / 5;
+
+    let right_groove_x = doors_x + doors_width - doors_width / 5;
+
+    fill_rect(
+        framebuffer,
+        left_groove_x,
+        doors_y + 20,
+        5,
+        doors_height.saturating_sub(40),
+        door_detail_color,
+    );
+
+    fill_rect(
+        framebuffer,
+        right_groove_x,
+        doors_y + 20,
+        5,
+        doors_height.saturating_sub(40),
+        door_detail_color,
+    );
+
+    // Ventana reforzada en las puertas.
+    let window_width = doors_width * 2 / 3;
+
+    let window_height: usize = 260;
+
+    let window_x = doors_x + doors_width.saturating_sub(window_width) / 2;
+
+    let window_y = doors_y + 110;
+
+    let window_frame: usize = 14;
+
+    fill_rect(
+        framebuffer,
+        window_x.saturating_sub(window_frame),
+        window_y.saturating_sub(window_frame),
+        window_width + window_frame * 2,
+        window_height + window_frame * 2,
+        door_detail_color,
+    );
+
+    // Interior oscuro del pozo.
+    fill_rect(
+        framebuffer,
+        window_x,
+        window_y,
+        window_width,
+        window_height,
+        0x07090D,
+    );
+
+    // Rieles vistos a través de la ventana.
+    let shaft_rail_margin: usize = 35;
+    let shaft_rail_width: usize = 8;
+
+    let left_rail_x = window_x + shaft_rail_margin;
+
+    let right_rail_x = window_x + window_width.saturating_sub(shaft_rail_margin + shaft_rail_width);
+
+    let rail_color = if red_emergency { 0x68242A } else { 0x454C58 };
+
+    fill_rect(
+        framebuffer,
+        left_rail_x,
+        window_y,
+        shaft_rail_width,
+        window_height,
+        rail_color,
+    );
+
+    fill_rect(
+        framebuffer,
+        right_rail_x,
+        window_y,
+        shaft_rail_width,
+        window_height,
+        rail_color,
+    );
+
+    // Movimiento del pozo hacia arriba.
+    let travel_distance = window_height as f32 * 4.0;
+
+    let vertical_offset = (progress * travel_distance) as i32;
+
+    let band_spacing: i32 = 55;
+
+    let vertical_cycle = window_height as i32 + band_spacing;
+
+    let band_count = window_height / band_spacing as usize + 4;
+
+    let beam_x = window_x + shaft_rail_margin;
+
+    let beam_width = window_width.saturating_sub(shaft_rail_margin * 2);
+
+    for band_index in 0..band_count {
+        let base_y = band_index as i32 * band_spacing;
+
+        let wrapped_y = (base_y - vertical_offset).rem_euclid(vertical_cycle);
+
+        if wrapped_y >= window_height as i32 {
+            continue;
+        }
+
+        let beam_y = window_y + wrapped_y as usize;
+
+        let remaining_height = window_y + window_height - beam_y;
+
+        let beam_height = 5_usize.min(remaining_height);
+
+        fill_rect(
+            framebuffer,
+            beam_x,
+            beam_y,
+            beam_width,
+            beam_height,
+            rail_color,
+        );
+
+        if band_index % 3 == 0 {
+            let light_color = if red_emergency { 0xFF3A42 } else { 0xB7C39B };
+
+            let light_height = 10_usize.min(remaining_height);
+
+            fill_rect(
+                framebuffer,
+                left_rail_x.saturating_sub(4),
+                beam_y,
+                16,
+                light_height,
+                light_color,
+            );
+
+            fill_rect(
+                framebuffer,
+                right_rail_x.saturating_sub(4),
+                beam_y,
+                16,
+                light_height,
+                light_color,
+            );
+        }
+    }
+
+    // Reflejos en el vidrio.
+    let reflection_color = if red_emergency { 0x5D171D } else { 0x26313A };
+
+    fill_rect(
+        framebuffer,
+        window_x + 25,
+        window_y + 15,
+        3,
+        window_height.saturating_sub(30),
+        reflection_color,
+    );
+
+    fill_rect(
+        framebuffer,
+        window_x + window_width.saturating_sub(32),
+        window_y + 35,
+        2,
+        window_height.saturating_sub(70),
+        reflection_color,
+    );
+
+    // Lámpara superior.
+    let lamp_width: usize = 190;
+    let lamp_height: usize = 24;
+
+    let lamp_x = width.saturating_sub(lamp_width) / 2;
+
+    let lamp_y: usize = 48;
+
+    fill_rect(
+        framebuffer,
+        lamp_x.saturating_sub(8),
+        lamp_y.saturating_sub(8),
+        lamp_width + 16,
+        lamp_height + 16,
+        0x111318,
+    );
+
+    let lamp_color = if red_emergency {
+        0xFF2630
+    } else if old_light_on {
+        0xD2CFB6
+    } else {
+        0x242429
+    };
+
+    fill_rect(
+        framebuffer,
+        lamp_x,
+        lamp_y,
+        lamp_width,
+        lamp_height,
+        lamp_color,
+    );
+
+    // Panel de control a la derecha.
+    let panel_width: usize = 135;
+    let panel_height: usize = 275;
+
+    let panel_x = doors_x + doors_width + 55;
+
+    let panel_y = doors_y + 120;
+
+    let panel_border_color = if red_emergency { 0x74242A } else { 0x666D78 };
+
+    fill_rect(
+        framebuffer,
+        panel_x,
+        panel_y,
+        panel_width,
+        panel_height,
+        panel_border_color,
+    );
+
+    fill_rect(
+        framebuffer,
+        panel_x + 6,
+        panel_y + 6,
+        panel_width - 12,
+        panel_height - 12,
+        0x0A0B0E,
+    );
+
+    // Pantalla del panel.
+    fill_rect(
+        framebuffer,
+        panel_x + 18,
+        panel_y + 20,
+        panel_width - 36,
+        80,
+        0x020303,
+    );
+
+    let indicator_color = if red_emergency { 0xFF3B43 } else { 0xD9E5A9 };
+
+    draw_text(
+        framebuffer,
+        "V",
+        panel_x + 55,
+        panel_y + 30,
+        3,
+        indicator_color,
+    );
 
     let level_text = format!("NIVEL {}", next_level_number,);
 
-    draw_centered_text(framebuffer, &level_text, content_y + 220, 2, 0xFFFF00);
+    draw_text(
+        framebuffer,
+        &level_text,
+        panel_x + 27,
+        panel_y + 72,
+        1,
+        indicator_color,
+    );
+
+    // Botones del panel.
+    for button_index in 0..3 {
+        let button_y = panel_y + 125 + button_index * 42;
+
+        fill_rect(framebuffer, panel_x + 45, button_y, 44, 26, 0x343840);
+
+        fill_rect(
+            framebuffer,
+            panel_x + 51,
+            button_y + 5,
+            32,
+            16,
+            if red_emergency && button_index == 2 {
+                0xFF3038
+            } else {
+                0x777C83
+            },
+        );
+    }
+
+    // Mensaje inferior.
+    draw_centered_text(
+        framebuffer,
+        "DESCENDIENDO...",
+        height.saturating_sub(68),
+        2,
+        if red_emergency { 0xFF6870 } else { 0xD8D9DC },
+    );
 }

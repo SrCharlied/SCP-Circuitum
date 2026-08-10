@@ -23,7 +23,7 @@ const BLOCK_SIZE: usize = 100;
 /// Amplitud del campo de visión (field of view), en radianes.
 const FOV: f32 = PI / 3.0;
 
-const LEVEL_TRANSITION_DURATION: f32 = 1.5;
+const LEVEL_TRANSITION_DURATION: f32 = 4.5;
 
 fn main() {
     let window_width = 1300;
@@ -224,7 +224,14 @@ fn main() {
             }
 
             GameState::LevelTransition => {
-                render_level_transition(&mut framebuffer, game_session.current_level_number());
+                let transition_progress =
+                    (1.0 - level_transition_remaining / LEVEL_TRANSITION_DURATION).clamp(0.0, 1.0);
+
+                render_level_transition(
+                    &mut framebuffer,
+                    game_session.current_level_number(),
+                    transition_progress,
+                );
             }
         }
 
