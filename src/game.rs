@@ -43,6 +43,7 @@ pub enum GameState {
     Welcome,
     Playing,
     Paused,
+    Victory,
 }
 
 impl GameState {
@@ -52,7 +53,7 @@ impl GameState {
 
             GameState::Paused => GameState::Playing,
 
-            GameState::Welcome => GameState::Welcome,
+            other => other,
         };
     }
 }

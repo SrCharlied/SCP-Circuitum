@@ -446,3 +446,38 @@ pub fn render_pause_menu(framebuffer: &mut Framebuffer, target_fps: u32) {
         0xAAAAAA,
     );
 }
+
+pub fn render_victory_screen(framebuffer: &mut Framebuffer) {
+    let width = framebuffer.width;
+    let height = framebuffer.height;
+
+    fill_rect(framebuffer, 0, 0, width, height, 0x07100A);
+
+    let content_y = height.saturating_sub(300) / 2;
+
+    draw_centered_text(framebuffer, "VICTORIA", content_y, 5, 0x66FF88);
+
+    draw_centered_text(
+        framebuffer,
+        "HAS ENCONTRADO LA SALIDA",
+        content_y + 120,
+        2,
+        0xFFFFFF,
+    );
+
+    draw_centered_text(
+        framebuffer,
+        "SCP CIRCUITUM COMPLETADO",
+        content_y + 180,
+        2,
+        0xAAAAAA,
+    );
+
+    draw_centered_text(
+        framebuffer,
+        "CIERRA LA VENTANA PARA SALIR",
+        content_y + 260,
+        2,
+        0xFFFF00,
+    );
+}

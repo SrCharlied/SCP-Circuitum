@@ -14,7 +14,8 @@ use crate::game::{GameSettings, GameState};
 use crate::maze::load_maze;
 use crate::player::process_events;
 use crate::renderer::{
-    draw_text, render_3d, render_minimap, render_pause_menu, render_top_down, render_welcome_screen,
+    draw_text, render_3d, render_minimap, render_pause_menu, render_top_down,
+    render_victory_screen, render_welcome_screen,
 };
 
 const BLOCK_SIZE: usize = 100;
@@ -92,32 +93,42 @@ fn main() {
 
             let j = player.pos.y as usize / BLOCK_SIZE;
 
-            if maze.get(j).and_then(|row| row.get(i)) == Some(&'g') {
-                println!("¡Meta alcanzada! Fin del juego.");
+            let current_cell = maze.get(j).and_then(|row| row.get(i)).copied();
 
-                break;
+            if matches!(current_cell, Some('g' | 'G')) {
+                game_state = GameState::Victory;
+
+                println!("¡Meta alcanzada! Victoria.");
             }
         }
 
         framebuffer.clear();
 
-        if game_state == GameState::Welcome {
-            render_welcome_screen(&mut framebuffer);
-        } else {
-            if window.is_key_down(Key::M) {
-                render_top_down(&mut framebuffer, &maze, &player);
-            } else {
-                render_3d(&mut framebuffer, &maze, &player);
-
-                render_minimap(&mut framebuffer, &maze, &player);
+        match game_state {
+            GameState::Welcome => {
+                render_welcome_screen(&mut framebuffer);
             }
 
-            if settings.show_fps {
-                draw_text(&mut framebuffer, &fps_text, 20, 20, 2, 0xFFFFFF);
+            GameState::Victory => {
+                render_victory_screen(&mut framebuffer);
             }
 
-            if game_state == GameState::Paused {
-                render_pause_menu(&mut framebuffer, settings.target_fps());
+            GameState::Playing | GameState::Paused => {
+                if window.is_key_down(Key::M) {
+                    render_top_down(&mut framebuffer, &maze, &player);
+                } else {
+                    render_3d(&mut framebuffer, &maze, &player);
+
+                    render_minimap(&mut framebuffer, &maze, &player);
+                }
+
+                if settings.show_fps {
+                    draw_text(&mut framebuffer, &fps_text, 20, 20, 2, 0xFFFFFF);
+                }
+
+                if game_state == GameState::Paused {
+                    render_pause_menu(&mut framebuffer, settings.target_fps());
+                }
             }
         }
 
