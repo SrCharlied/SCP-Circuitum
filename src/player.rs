@@ -7,8 +7,9 @@ const PLAYER_RADIUS_FACTOR: f32 = 0.20;
 
 pub const MAX_STAMINA: f32 = 7.0;
 
-const WALK_SPEED: f32 = 500.0;
-const SPRINT_SPEED: f32 = 800.0;
+const WALK_SPEED: f32 = 350.0;
+const SPRINT_SPEED: f32 = 500.0;
+const EXHAUSTED_SPEED: f32 = 100.0;
 
 const STAMINA_REGEN_DELAY: f32 = 1.0;
 const STAMINA_REGEN_RATE: f32 = 1.4;
@@ -127,10 +128,16 @@ pub fn process_events(
             player.sprint_exhausted = false;
         }
     }
+    let walking_speed = if player.sprint_exhausted {
+        EXHAUSTED_SPEED
+    } else {
+        WALK_SPEED
+    };
+
     let forward_speed = if is_sprinting {
         SPRINT_SPEED
     } else {
-        WALK_SPEED
+        walking_speed
     };
 
     let mut movement = 0.0;
@@ -140,7 +147,7 @@ pub fn process_events(
     }
 
     if window.is_key_down(Key::S) {
-        movement -= WALK_SPEED * delta_time;
+        movement -= walking_speed * delta_time;
     }
 
     if movement != 0.0 {
