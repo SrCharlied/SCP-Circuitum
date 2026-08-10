@@ -10,7 +10,7 @@ use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 
 use crate::framebuffer::Framebuffer;
-use crate::game::{GameSettings, GameState};
+use crate::game::{GameSettings, GameState, VictoryMenuOption};
 use crate::maze::load_maze;
 use crate::player::process_events;
 use crate::renderer::{
@@ -30,6 +30,10 @@ fn main() {
     let framebuffer_height = 900;
 
     let (maze, mut player) = load_maze("./maze.txt", BLOCK_SIZE);
+
+    let initial_player_position = player.pos.clone();
+
+    let initial_player_angle = player.a;
 
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
     framebuffer.set_background_color(0x333355);
@@ -53,6 +57,10 @@ fn main() {
 
     let mut game_state = GameState::Welcome;
 
+    let mut victory_menu_option = VictoryMenuOption::default();
+
+    let mut welcome_enter_locked = false;
+
     while window.is_open() {
         let frame_start = Instant::now();
 
@@ -60,45 +68,71 @@ fn main() {
 
         previous_frame = frame_start;
 
-        if game_state == GameState::Welcome && window.is_key_pressed(Key::Enter, KeyRepeat::No) {
-            game_state = GameState::Playing;
+        match game_state {
+            GameState::Welcome => {
+                if welcome_enter_locked {
+                    if !window.is_key_down(Key::Enter) {
+                        welcome_enter_locked = false;
+                    }
+                } else if window.is_key_pressed(Key::Enter, KeyRepeat::No) {
+                    game_state = GameState::Playing;
 
-            previous_frame = Instant::now();
-        }
-
-        if matches!(game_state, GameState::Playing | GameState::Paused)
-            && window.is_key_pressed(Key::Escape, KeyRepeat::No)
-        {
-            game_state.toggle_pause();
-
-            if game_state == GameState::Playing {
-                previous_frame = Instant::now();
-            }
-        }
-
-        if game_state == GameState::Paused {
-            if window.is_key_pressed(Key::Right, KeyRepeat::No) {
-                settings.select_next_fps();
+                    previous_frame = Instant::now();
+                }
             }
 
-            if window.is_key_pressed(Key::Left, KeyRepeat::No) {
-                settings.select_previous_fps();
+            GameState::Playing => {
+                if window.is_key_pressed(Key::Escape, KeyRepeat::No) {
+                    game_state.toggle_pause();
+                }
             }
-        }
 
-        if game_state == GameState::Playing {
-            process_events(&window, &mut player, &maze, BLOCK_SIZE, delta_time);
+            GameState::Paused => {
+                if window.is_key_pressed(Key::Escape, KeyRepeat::No) {
+                    game_state.toggle_pause();
 
-            let i = player.pos.x as usize / BLOCK_SIZE;
+                    previous_frame = Instant::now();
+                } else {
+                    if window.is_key_pressed(Key::Right, KeyRepeat::No) {
+                        settings.select_next_fps();
+                    }
 
-            let j = player.pos.y as usize / BLOCK_SIZE;
+                    if window.is_key_pressed(Key::Left, KeyRepeat::No) {
+                        settings.select_previous_fps();
+                    }
+                }
+            }
 
-            let current_cell = maze.get(j).and_then(|row| row.get(i)).copied();
+            GameState::Victory => {
+                if window.is_key_pressed(Key::Right, KeyRepeat::No) {
+                    victory_menu_option.select_next();
+                }
 
-            if matches!(current_cell, Some('g' | 'G')) {
-                game_state = GameState::Victory;
+                if window.is_key_pressed(Key::Left, KeyRepeat::No) {
+                    victory_menu_option.select_previous();
+                }
 
-                println!("¡Meta alcanzada! Victoria.");
+                if window.is_key_pressed(Key::Enter, KeyRepeat::No) {
+                    match victory_menu_option {
+                        VictoryMenuOption::MainMenu => {
+                            player.pos = initial_player_position.clone();
+
+                            player.a = initial_player_angle;
+
+                            game_state = GameState::Welcome;
+
+                            victory_menu_option = VictoryMenuOption::default();
+
+                            welcome_enter_locked = true;
+
+                            previous_frame = Instant::now();
+                        }
+
+                        VictoryMenuOption::Exit => {
+                            break;
+                        }
+                    }
+                }
             }
         }
 
@@ -110,7 +144,7 @@ fn main() {
             }
 
             GameState::Victory => {
-                render_victory_screen(&mut framebuffer);
+                render_victory_screen(&mut framebuffer, victory_menu_option);
             }
 
             GameState::Playing | GameState::Paused => {
@@ -129,6 +163,24 @@ fn main() {
                 if game_state == GameState::Paused {
                     render_pause_menu(&mut framebuffer, settings.target_fps());
                 }
+            }
+        }
+
+        if game_state == GameState::Playing {
+            process_events(&window, &mut player, &maze, BLOCK_SIZE, delta_time);
+
+            let map_x = player.pos.x as usize / BLOCK_SIZE;
+
+            let map_y = player.pos.y as usize / BLOCK_SIZE;
+
+            let current_cell = maze.get(map_y).and_then(|row| row.get(map_x)).copied();
+
+            if matches!(current_cell, Some('g' | 'G')) {
+                game_state = GameState::Victory;
+
+                victory_menu_option = VictoryMenuOption::default();
+
+                println!("¡Meta alcanzada! Victoria.");
             }
         }
 

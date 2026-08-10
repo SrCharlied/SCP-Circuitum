@@ -57,3 +57,28 @@ impl GameState {
         };
     }
 }
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum VictoryMenuOption {
+    MainMenu,
+    Exit,
+}
+
+impl Default for VictoryMenuOption {
+    fn default() -> Self {
+        Self::MainMenu
+    }
+}
+
+impl VictoryMenuOption {
+    pub fn select_next(&mut self) {
+        *self = match *self {
+            Self::MainMenu => Self::Exit,
+            Self::Exit => Self::MainMenu,
+        };
+    }
+
+    pub fn select_previous(&mut self) {
+        self.select_next();
+    }
+}

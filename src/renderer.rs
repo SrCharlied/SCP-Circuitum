@@ -1,5 +1,6 @@
 use crate::caster::cast_ray;
 use crate::framebuffer::Framebuffer;
+use crate::game::VictoryMenuOption;
 use crate::maze::Maze;
 use crate::player::Player;
 use crate::{BLOCK_SIZE, FOV};
@@ -447,20 +448,20 @@ pub fn render_pause_menu(framebuffer: &mut Framebuffer, target_fps: u32) {
     );
 }
 
-pub fn render_victory_screen(framebuffer: &mut Framebuffer) {
+pub fn render_victory_screen(framebuffer: &mut Framebuffer, selected_option: VictoryMenuOption) {
     let width = framebuffer.width;
     let height = framebuffer.height;
 
     fill_rect(framebuffer, 0, 0, width, height, 0x07100A);
 
-    let content_y = height.saturating_sub(300) / 2;
+    let content_y = height.saturating_sub(420) / 2;
 
     draw_centered_text(framebuffer, "VICTORIA", content_y, 5, 0x66FF88);
 
     draw_centered_text(
         framebuffer,
         "HAS ENCONTRADO LA SALIDA",
-        content_y + 120,
+        content_y + 110,
         2,
         0xFFFFFF,
     );
@@ -468,16 +469,84 @@ pub fn render_victory_screen(framebuffer: &mut Framebuffer) {
     draw_centered_text(
         framebuffer,
         "SCP CIRCUITUM COMPLETADO",
-        content_y + 180,
+        content_y + 165,
+        2,
+        0xAAAAAA,
+    );
+
+    let button_width = 260;
+    let button_height = 70;
+    let button_gap = 40;
+
+    let buttons_width = button_width * 2 + button_gap;
+
+    let buttons_x = width.saturating_sub(buttons_width) / 2;
+
+    let buttons_y = content_y + 250;
+
+    draw_menu_button(
+        framebuffer,
+        "VOLVER AL MENU",
+        buttons_x,
+        buttons_y,
+        button_width,
+        button_height,
+        selected_option == VictoryMenuOption::MainMenu,
+    );
+
+    draw_menu_button(
+        framebuffer,
+        "SALIR",
+        buttons_x + button_width + button_gap,
+        buttons_y,
+        button_width,
+        button_height,
+        selected_option == VictoryMenuOption::Exit,
+    );
+
+    draw_centered_text(
+        framebuffer,
+        "IZQ / DER - ELEGIR",
+        content_y + 350,
         2,
         0xAAAAAA,
     );
 
     draw_centered_text(
         framebuffer,
-        "CIERRA LA VENTANA PARA SALIR",
-        content_y + 260,
+        "ENTER - CONFIRMAR",
+        content_y + 395,
         2,
         0xFFFF00,
     );
+}
+
+fn draw_menu_button(
+    framebuffer: &mut Framebuffer,
+    label: &str,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    selected: bool,
+) {
+    let border_color = if selected { 0xFFFF00 } else { 0x777777 };
+
+    let text_color = if selected { 0xFFFF00 } else { 0xAAAAAA };
+
+    fill_rect(framebuffer, x, y, width, height, border_color);
+
+    fill_rect(framebuffer, x + 4, y + 4, width - 8, height - 8, 0x111118);
+
+    let scale = 2;
+
+    let text_width = label.chars().count() * 9 * scale;
+
+    let text_height = 8 * scale;
+
+    let text_x = x + width.saturating_sub(text_width) / 2;
+
+    let text_y = y + height.saturating_sub(text_height) / 2;
+
+    draw_text(framebuffer, label, text_x, text_y, scale, text_color);
 }
