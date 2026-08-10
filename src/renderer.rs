@@ -12,6 +12,18 @@ const MINIMAP_MARGIN: usize = 20;
 /// Cantidad de rayos que se lanzan en abanico para formar el campo de visión.
 const NUM_RAYS: usize = 5;
 
+/// Rayos utilizados para representar la
+/// visión del jugador en el minimapa.
+const MINIMAP_VISION_RAYS: usize = 128;
+
+/// Radio en píxeles utilizado para cerrar
+/// pequeños huecos de rasterización.
+const VISIBILITY_MASK_RADIUS: i32 = 1;
+
+/// Alcance de visión expresado en cantidad
+/// de celdas del laberinto.
+const MINIMAP_VISION_RANGE_CELLS: f32 = 5.0;
+
 pub fn cell_color(cell: char) -> u32 {
     match cell {
         '+' => 0x00AAFF,       // columnas
@@ -95,6 +107,65 @@ fn fill_rect(
     for px in x..x + width {
         for py in y..y + height {
             framebuffer.point(px, py);
+        }
+    }
+}
+
+fn mark_visibility_line(
+    visibility_mask: &mut [bool],
+    mask_width: usize,
+    mask_height: usize,
+    start_x: i32,
+    start_y: i32,
+    end_x: i32,
+    end_y: i32,
+) {
+    let mut x = start_x;
+    let mut y = start_y;
+
+    let delta_x = (end_x - start_x).abs();
+
+    let step_x = if start_x < end_x { 1 } else { -1 };
+
+    let delta_y = -(end_y - start_y).abs();
+
+    let step_y = if start_y < end_y { 1 } else { -1 };
+
+    let mut error = delta_x + delta_y;
+
+    loop {
+        for offset_y in -VISIBILITY_MASK_RADIUS..=VISIBILITY_MASK_RADIUS {
+            for offset_x in -VISIBILITY_MASK_RADIUS..=VISIBILITY_MASK_RADIUS {
+                let mask_x = x + offset_x;
+
+                let mask_y = y + offset_y;
+
+                if mask_x >= 0
+                    && mask_y >= 0
+                    && mask_x < mask_width as i32
+                    && mask_y < mask_height as i32
+                {
+                    let index = mask_y as usize * mask_width + mask_x as usize;
+
+                    visibility_mask[index] = true;
+                }
+            }
+        }
+
+        if x == end_x && y == end_y {
+            break;
+        }
+
+        let doubled_error = error * 2;
+
+        if doubled_error >= delta_y {
+            error += delta_y;
+            x += step_x;
+        }
+
+        if doubled_error <= delta_x {
+            error += delta_x;
+            y += step_y;
         }
     }
 }
@@ -224,31 +295,86 @@ pub fn render_minimap(framebuffer: &mut Framebuffer, maze: &Maze, player: &Playe
 
     let maze_columns = maze.iter().map(|row| row.len()).max().unwrap_or(0);
 
+    if maze_columns == 0 {
+        return;
+    }
+
     let minimap_width = maze_columns * MINIMAP_CELL_SIZE;
 
     let minimap_height = maze.len() * MINIMAP_CELL_SIZE;
 
-    // Coloca el minimapa en la esquina superior derecha.
     let offset_x = framebuffer
         .width
         .saturating_sub(minimap_width + MINIMAP_MARGIN);
 
     let offset_y = MINIMAP_MARGIN;
 
-    // Fondo ligeramente mayor para crear un marco.
     let panel_x = offset_x.saturating_sub(4);
+
     let panel_y = offset_y.saturating_sub(4);
 
+    // Marco exterior.
     fill_rect(
         framebuffer,
         panel_x,
         panel_y,
         minimap_width + 8,
         minimap_height + 8,
-        0x111118,
+        0x3A3D46,
     );
 
-    // Dibujar todas las celdas.
+    // Oscuridad interior.
+    fill_rect(
+        framebuffer,
+        offset_x,
+        offset_y,
+        minimap_width,
+        minimap_height,
+        0x050609,
+    );
+
+    let minimap_scale = MINIMAP_CELL_SIZE as f32 / BLOCK_SIZE as f32;
+
+    // Coordenadas locales al minimapa.
+    let player_local_x = (player.pos.x * minimap_scale) as i32;
+
+    let player_local_y = (player.pos.y * minimap_scale) as i32;
+
+    let mut visibility_mask = vec![false; minimap_width * minimap_height];
+
+    let max_vision_distance = BLOCK_SIZE as f32 * MINIMAP_VISION_RANGE_CELLS;
+
+    for ray_index in 0..MINIMAP_VISION_RAYS {
+        let ray_fraction = ray_index as f32 / (MINIMAP_VISION_RAYS - 1) as f32;
+
+        let ray_angle = player.a - FOV / 2.0 + FOV * ray_fraction;
+
+        let ray_distance = cast_ray(maze, player, ray_angle, BLOCK_SIZE)
+            .map(|(distance, _wall)| distance)
+            .unwrap_or(max_vision_distance)
+            .min(max_vision_distance);
+
+        let ray_end_world_x = player.pos.x + ray_distance * ray_angle.cos();
+
+        let ray_end_world_y = player.pos.y + ray_distance * ray_angle.sin();
+
+        let ray_end_local_x = (ray_end_world_x * minimap_scale) as i32;
+
+        let ray_end_local_y = (ray_end_world_y * minimap_scale) as i32;
+
+        mark_visibility_line(
+            &mut visibility_mask,
+            minimap_width,
+            minimap_height,
+            player_local_x,
+            player_local_y,
+            ray_end_local_x,
+            ray_end_local_y,
+        );
+    }
+
+    // Dibujar cada celda únicamente en
+    // los píxeles que marca la máscara.
     for (row, line) in maze.iter().enumerate() {
         for (col, &cell) in line.iter().enumerate() {
             let color = match cell {
@@ -257,30 +383,43 @@ pub fn render_minimap(framebuffer: &mut Framebuffer, maze: &Maze, player: &Playe
                 _ => cell_color(cell),
             };
 
-            let screen_x = offset_x + col * MINIMAP_CELL_SIZE;
+            framebuffer.set_current_color(color);
 
-            let screen_y = offset_y + row * MINIMAP_CELL_SIZE;
+            let cell_local_x = col * MINIMAP_CELL_SIZE;
 
-            fill_rect(
-                framebuffer,
-                screen_x,
-                screen_y,
-                MINIMAP_CELL_SIZE,
-                MINIMAP_CELL_SIZE,
-                color,
-            );
+            let cell_local_y = row * MINIMAP_CELL_SIZE;
+
+            for pixel_y in 0..MINIMAP_CELL_SIZE {
+                let mask_y = cell_local_y + pixel_y;
+
+                if mask_y >= minimap_height {
+                    continue;
+                }
+
+                for pixel_x in 0..MINIMAP_CELL_SIZE {
+                    let mask_x = cell_local_x + pixel_x;
+
+                    if mask_x >= minimap_width {
+                        continue;
+                    }
+
+                    let mask_index = mask_y * minimap_width + mask_x;
+
+                    if visibility_mask[mask_index] {
+                        framebuffer.point(offset_x + mask_x, offset_y + mask_y);
+                    }
+                }
+            }
         }
     }
 
-    // Convertir la posición del jugador del mundo
-    // a la escala reducida del minimapa.
-    let minimap_scale = MINIMAP_CELL_SIZE as f32 / BLOCK_SIZE as f32;
+    // El jugador siempre se muestra,
+    // aunque la máscara tenga algún
+    // borde irregular cerca del origen.
+    let player_x = offset_x + player_local_x.max(0) as usize;
 
-    let player_x = offset_x + (player.pos.x * minimap_scale) as usize;
+    let player_y = offset_y + player_local_y.max(0) as usize;
 
-    let player_y = offset_y + (player.pos.y * minimap_scale) as usize;
-
-    // Marcador del jugador.
     fill_rect(
         framebuffer,
         player_x.saturating_sub(2),
