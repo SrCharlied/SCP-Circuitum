@@ -14,7 +14,7 @@ use crate::game::{GameSettings, GameState, VictoryMenuOption};
 use crate::maze::load_maze;
 use crate::player::process_events;
 use crate::renderer::{
-    draw_text, render_3d, render_minimap, render_pause_menu, render_top_down,
+    draw_text, render_3d, render_minimap, render_pause_menu, render_stamina_bar, render_top_down,
     render_victory_screen, render_welcome_screen,
 };
 
@@ -115,9 +115,7 @@ fn main() {
                 if window.is_key_pressed(Key::Enter, KeyRepeat::No) {
                     match victory_menu_option {
                         VictoryMenuOption::MainMenu => {
-                            player.pos = initial_player_position.clone();
-
-                            player.a = initial_player_angle;
+                            player.reset(initial_player_position.clone(), initial_player_angle);
 
                             game_state = GameState::Welcome;
 
@@ -159,6 +157,12 @@ fn main() {
                 if settings.show_fps {
                     draw_text(&mut framebuffer, &fps_text, 20, 20, 2, 0xFFFFFF);
                 }
+
+                render_stamina_bar(
+                    &mut framebuffer,
+                    player.stamina_ratio(),
+                    player.is_sprint_exhausted(),
+                );
 
                 if game_state == GameState::Paused {
                     render_pause_menu(&mut framebuffer, settings.target_fps());

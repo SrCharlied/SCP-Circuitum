@@ -550,3 +550,91 @@ fn draw_menu_button(
 
     draw_text(framebuffer, label, text_x, text_y, scale, text_color);
 }
+
+pub fn render_stamina_bar(
+    framebuffer: &mut Framebuffer,
+    stamina_ratio: f32,
+    sprint_exhausted: bool,
+) {
+    let ratio = stamina_ratio.clamp(0.0, 1.0);
+
+    let bar_width: usize = 360;
+    let bar_height: usize = 28;
+    let border_size: usize = 4;
+    let bottom_margin: usize = 40;
+
+    let bar_x = framebuffer.width.saturating_sub(bar_width) / 2;
+
+    let bar_y = framebuffer
+        .height
+        .saturating_sub(bar_height + bottom_margin);
+
+    let border_color = if sprint_exhausted { 0xFF5555 } else { 0xFFFFFF };
+
+    fill_rect(
+        framebuffer,
+        bar_x,
+        bar_y,
+        bar_width,
+        bar_height,
+        border_color,
+    );
+
+    let inner_x = bar_x + border_size;
+
+    let inner_y = bar_y + border_size;
+
+    let inner_width = bar_width - border_size * 2;
+
+    let inner_height = bar_height - border_size * 2;
+
+    fill_rect(
+        framebuffer,
+        inner_x,
+        inner_y,
+        inner_width,
+        inner_height,
+        0x18181F,
+    );
+
+    let filled_width = (inner_width as f32 * ratio) as usize;
+
+    let fill_color = if sprint_exhausted {
+        0xFF5555
+    } else if ratio > 0.50 {
+        0x55DD77
+    } else if ratio > 0.20 {
+        0xFFCC33
+    } else {
+        0xFF5555
+    };
+
+    if filled_width > 0 {
+        fill_rect(
+            framebuffer,
+            inner_x,
+            inner_y,
+            filled_width,
+            inner_height,
+            fill_color,
+        );
+    }
+
+    if sprint_exhausted {
+        draw_centered_text(
+            framebuffer,
+            "STAMINA AGOTADA - SUELTA SHIFT",
+            bar_y.saturating_sub(35),
+            2,
+            0xFF7777,
+        );
+    } else {
+        draw_centered_text(
+            framebuffer,
+            "STAMINA",
+            bar_y.saturating_sub(20),
+            1,
+            0xCCCCCC,
+        );
+    }
+}
