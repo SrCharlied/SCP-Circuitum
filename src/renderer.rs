@@ -49,8 +49,8 @@ pub fn render_3d(framebuffer: &mut Framebuffer, maze: &Maze, player: &Player) {
 
         let ray_angle = player.a + beta;
 
-        if let Some((raw_distance, wall)) = cast_ray(maze, player, ray_angle, BLOCK_SIZE) {
-            let distancia_corregida = raw_distance * beta.cos();
+        if let Some(hit) = cast_ray(maze, player, ray_angle, BLOCK_SIZE) {
+            let distancia_corregida = hit.distance * beta.cos();
 
             // Evita dividir entre cero si el jugador queda
             // demasiado cerca o dentro de una pared.
@@ -78,7 +78,7 @@ pub fn render_3d(framebuffer: &mut Framebuffer, maze: &Maze, player: &Player) {
             }
 
             // Dibujar la pared.
-            framebuffer.set_current_color(cell_color(wall));
+            framebuffer.set_current_color(cell_color(hit.cell));
 
             for y in top_clamped..=bottom_clamped {
                 framebuffer.point(i, y);
@@ -349,14 +349,16 @@ pub fn render_minimap(framebuffer: &mut Framebuffer, maze: &Maze, player: &Playe
 
         let ray_angle = player.a - FOV / 2.0 + FOV * ray_fraction;
 
-        let ray_distance = cast_ray(maze, player, ray_angle, BLOCK_SIZE)
-            .map(|(distance, _wall)| distance)
-            .unwrap_or(max_vision_distance)
-            .min(max_vision_distance);
+        let ray_hit = cast_ray(maze, player, ray_angle, BLOCK_SIZE);
 
-        let ray_end_world_x = player.pos.x + ray_distance * ray_angle.cos();
+        let (ray_end_world_x, ray_end_world_y) = match ray_hit {
+            Some(hit) if hit.distance <= max_vision_distance => (hit.hit_x, hit.hit_y),
 
-        let ray_end_world_y = player.pos.y + ray_distance * ray_angle.sin();
+            _ => (
+                player.pos.x + max_vision_distance * ray_angle.cos(),
+                player.pos.y + max_vision_distance * ray_angle.sin(),
+            ),
+        };
 
         let ray_end_local_x = (ray_end_world_x * minimap_scale) as i32;
 
@@ -485,8 +487,8 @@ pub fn render_top_down(framebuffer: &mut Framebuffer, maze: &Maze, player: &Play
 
         let angle = player.a - FOV / 2.0 + FOV * ray_fraction;
 
-        if let Some((distancia, _wall)) = cast_ray(maze, player, angle, BLOCK_SIZE) {
-            draw_debug_ray(framebuffer, player, angle, distancia);
+        if let Some(hit) = cast_ray(maze, player, angle, BLOCK_SIZE) {
+            draw_debug_ray(framebuffer, player, angle, hit.distance);
         }
     }
 }

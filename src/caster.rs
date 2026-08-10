@@ -1,12 +1,15 @@
 use crate::maze::Maze;
 use crate::player::Player;
 
-pub fn cast_ray(
-    maze: &Maze,
-    player: &Player,
-    angulo: f32,
-    block_size: usize,
-) -> Option<(f32, char)> {
+#[derive(Clone, Copy, Debug)]
+pub struct RayHit {
+    pub distance: f32,
+    pub cell: char,
+    pub hit_x: f32,
+    pub hit_y: f32,
+}
+
+pub fn cast_ray(maze: &Maze, player: &Player, angulo: f32, block_size: usize) -> Option<RayHit> {
     let mut distancia = 0.0;
 
     loop {
@@ -30,7 +33,12 @@ pub fn cast_ray(
         let cell = maze[map_y][map_x];
 
         if cell != ' ' {
-            return Some((distancia, cell));
+            return Some(RayHit {
+                distance: distancia,
+                cell,
+                hit_x: world_x,
+                hit_y: world_y,
+            });
         }
 
         distancia += 1.0;
