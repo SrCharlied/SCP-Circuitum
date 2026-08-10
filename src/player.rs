@@ -33,14 +33,6 @@ impl Player {
         }
     }
 
-    pub fn reset(&mut self, pos: Vec2, angle: f32) {
-        self.pos = pos;
-        self.a = angle;
-        self.stamina = MAX_STAMINA;
-        self.stamina_regen_delay_remaining = 0.0;
-        self.sprint_exhausted = false;
-    }
-
     pub fn stamina_ratio(&self) -> f32 {
         (self.stamina / MAX_STAMINA).clamp(0.0, 1.0)
     }

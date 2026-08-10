@@ -10,12 +10,12 @@ use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 
 use crate::framebuffer::Framebuffer;
-use crate::game::{GameSettings, GameState, VictoryMenuOption};
+use crate::game::{GameSession, GameSettings, GameState, VictoryMenuOption};
 use crate::maze::load_maze;
 use crate::player::process_events;
 use crate::renderer::{
-    draw_text, render_3d, render_minimap, render_pause_menu, render_stamina_bar, render_top_down,
-    render_victory_screen, render_welcome_screen,
+    draw_text, render_3d, render_level_transition, render_minimap, render_pause_menu,
+    render_stamina_bar, render_top_down, render_victory_screen, render_welcome_screen,
 };
 
 const BLOCK_SIZE: usize = 100;
@@ -23,17 +23,17 @@ const BLOCK_SIZE: usize = 100;
 /// Amplitud del campo de visión (field of view), en radianes.
 const FOV: f32 = PI / 3.0;
 
+const LEVEL_TRANSITION_DURATION: f32 = 1.5;
+
 fn main() {
     let window_width = 1300;
     let window_height = 900;
     let framebuffer_width = 1300;
     let framebuffer_height = 900;
 
-    let (maze, mut player) = load_maze("./maze.txt", BLOCK_SIZE);
+    let mut game_session = GameSession::default();
 
-    let initial_player_position = player.pos.clone();
-
-    let initial_player_angle = player.a;
+    let (mut maze, mut player) = load_maze(game_session.current_level_path(), BLOCK_SIZE);
 
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
     framebuffer.set_background_color(0x333355);
@@ -54,6 +54,8 @@ fn main() {
     let mut fps_text = String::from("FPS: --");
 
     let mut settings = GameSettings::default();
+
+    let mut level_transition_remaining = 0.0_f32;
 
     let mut game_state = GameState::Welcome;
 
@@ -103,6 +105,8 @@ fn main() {
                 }
             }
 
+            GameState::LevelTransition => {}
+
             GameState::Victory => {
                 if window.is_key_pressed(Key::Right, KeyRepeat::No) {
                     victory_menu_option.select_next();
@@ -115,7 +119,13 @@ fn main() {
                 if window.is_key_pressed(Key::Enter, KeyRepeat::No) {
                     match victory_menu_option {
                         VictoryMenuOption::MainMenu => {
-                            player.reset(initial_player_position.clone(), initial_player_angle);
+                            game_session.reset();
+
+                            let (first_level_maze, first_level_player) =
+                                load_maze(game_session.current_level_path(), BLOCK_SIZE);
+
+                            maze = first_level_maze;
+                            player = first_level_player;
 
                             game_state = GameState::Welcome;
 
@@ -131,6 +141,50 @@ fn main() {
                         }
                     }
                 }
+            }
+        }
+
+        if game_state == GameState::Playing {
+            process_events(&window, &mut player, &maze, BLOCK_SIZE, delta_time);
+
+            let map_x = player.pos.x as usize / BLOCK_SIZE;
+
+            let map_y = player.pos.y as usize / BLOCK_SIZE;
+
+            let current_cell = maze.get(map_y).and_then(|row| row.get(map_x)).copied();
+
+            if matches!(current_cell, Some('g' | 'G')) {
+                if game_session.advance_level() {
+                    game_state = GameState::LevelTransition;
+
+                    level_transition_remaining = LEVEL_TRANSITION_DURATION;
+
+                    println!("Elevador hacia: {}", game_session.current_level_path(),);
+                } else {
+                    game_state = GameState::Victory;
+
+                    victory_menu_option = VictoryMenuOption::default();
+
+                    println!("¡Último nivel completado! Victoria.");
+                }
+            }
+        }
+
+        if game_state == GameState::LevelTransition {
+            level_transition_remaining = (level_transition_remaining - delta_time).max(0.0);
+
+            if level_transition_remaining <= 0.0 {
+                let (next_maze, next_player) =
+                    load_maze(game_session.current_level_path(), BLOCK_SIZE);
+
+                maze = next_maze;
+                player = next_player;
+
+                game_state = GameState::Playing;
+
+                previous_frame = Instant::now();
+
+                println!("Nivel cargado: {}", game_session.current_level_path(),);
             }
         }
 
@@ -168,23 +222,9 @@ fn main() {
                     render_pause_menu(&mut framebuffer, settings.target_fps());
                 }
             }
-        }
 
-        if game_state == GameState::Playing {
-            process_events(&window, &mut player, &maze, BLOCK_SIZE, delta_time);
-
-            let map_x = player.pos.x as usize / BLOCK_SIZE;
-
-            let map_y = player.pos.y as usize / BLOCK_SIZE;
-
-            let current_cell = maze.get(map_y).and_then(|row| row.get(map_x)).copied();
-
-            if matches!(current_cell, Some('g' | 'G')) {
-                game_state = GameState::Victory;
-
-                victory_menu_option = VictoryMenuOption::default();
-
-                println!("¡Meta alcanzada! Victoria.");
+            GameState::LevelTransition => {
+                render_level_transition(&mut framebuffer, game_session.current_level_number());
             }
         }
 

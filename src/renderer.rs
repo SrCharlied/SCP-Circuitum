@@ -638,3 +638,20 @@ pub fn render_stamina_bar(
         );
     }
 }
+
+pub fn render_level_transition(framebuffer: &mut Framebuffer, next_level_number: usize) {
+    let width = framebuffer.width;
+    let height = framebuffer.height;
+
+    fill_rect(framebuffer, 0, 0, width, height, 0x050609);
+
+    let content_y = height.saturating_sub(300) / 2;
+
+    draw_centered_text(framebuffer, "ELEVADOR", content_y, 5, 0xCCCCCC);
+
+    draw_centered_text(framebuffer, "DESCENDIENDO...", content_y + 120, 3, 0xFFFFFF);
+
+    let level_text = format!("NIVEL {}", next_level_number,);
+
+    draw_centered_text(framebuffer, &level_text, content_y + 220, 2, 0xFFFF00);
+}

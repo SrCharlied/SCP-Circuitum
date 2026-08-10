@@ -2,6 +2,8 @@ use std::time::Duration;
 
 const FPS_OPTIONS: [u32; 3] = [60, 120, 144];
 
+const LEVEL_PATHS: [&str; 2] = ["./levels/level_01.txt", "./levels/level_02.txt"];
+
 pub struct GameSettings {
     selected_fps_index: usize,
     pub show_fps: bool,
@@ -43,6 +45,7 @@ pub enum GameState {
     Welcome,
     Playing,
     Paused,
+    LevelTransition,
     Victory,
 }
 
@@ -80,5 +83,43 @@ impl VictoryMenuOption {
 
     pub fn select_previous(&mut self) {
         self.select_next();
+    }
+}
+
+pub struct GameSession {
+    current_level_index: usize,
+}
+
+impl Default for GameSession {
+    fn default() -> Self {
+        Self {
+            current_level_index: 0,
+        }
+    }
+}
+
+impl GameSession {
+    pub fn current_level_path(&self) -> &'static str {
+        LEVEL_PATHS[self.current_level_index]
+    }
+
+    pub fn advance_level(&mut self) -> bool {
+        let next_level_index = self.current_level_index + 1;
+
+        if next_level_index >= LEVEL_PATHS.len() {
+            return false;
+        }
+
+        self.current_level_index = next_level_index;
+
+        true
+    }
+
+    pub fn reset(&mut self) {
+        self.current_level_index = 0;
+    }
+
+    pub fn current_level_number(&self) -> usize {
+        self.current_level_index + 1
     }
 }
