@@ -1,4 +1,4 @@
-use crate::caster::cast_ray;
+use crate::caster::{WallSide, cast_ray};
 use crate::framebuffer::Framebuffer;
 use crate::game::VictoryMenuOption;
 use crate::maze::Maze;
@@ -32,6 +32,16 @@ pub fn cell_color(cell: char) -> u32 {
         'g' | 'G' => 0x00FF00, // meta
         _ => 0xFFDDDD,         // cualquier otra cosa
     }
+}
+
+fn darken_color(color: u32) -> u32 {
+    let red = ((color >> 16) & 0xFF) * 3 / 4;
+
+    let green = ((color >> 8) & 0xFF) * 3 / 4;
+
+    let blue = (color & 0xFF) * 3 / 4;
+
+    (red << 16) | (green << 8) | blue
 }
 
 pub fn render_3d(framebuffer: &mut Framebuffer, maze: &Maze, player: &Player) {
@@ -77,8 +87,17 @@ pub fn render_3d(framebuffer: &mut Framebuffer, maze: &Maze, player: &Player) {
                 framebuffer.point(i, y);
             }
 
-            // Dibujar la pared.
-            framebuffer.set_current_color(cell_color(hit.cell));
+            // Dibujar la pared. Las caras
+            // horizontales se oscurecen
+            // ligeramente para aprovechar la
+            // orientación calculada por DDA.
+            let wall_color = match hit.side {
+                WallSide::Vertical => cell_color(hit.cell),
+
+                WallSide::Horizontal => darken_color(cell_color(hit.cell)),
+            };
+
+            framebuffer.set_current_color(wall_color);
 
             for y in top_clamped..=bottom_clamped {
                 framebuffer.point(i, y);
