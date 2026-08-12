@@ -22,6 +22,21 @@ const VISIBILITY_MASK_RADIUS: i32 = 1;
 /// de celdas del laberinto.
 const MINIMAP_VISION_RANGE_CELLS: f32 = 5.0;
 
+/// Distancia a partir de la cual las paredes
+/// comienzan a perder iluminación.
+const WALL_DARKNESS_START_CELLS: f32 = 1.0;
+
+/// Distancia a la que la pared alcanza la
+/// iluminación ambiental mínima.
+const WALL_DARKNESS_END_CELLS: f32 = 7.0;
+
+/// Luz mínima conservada en paredes lejanas.
+const MIN_WALL_LIGHT: f32 = 0.22;
+
+/// Escala entera utilizada para aplicar luz
+/// sin operaciones de punto flotante por píxel.
+const LIGHT_SCALE: u32 = 256;
+
 pub fn cell_color(cell: char) -> u32 {
     match cell {
         '+' => 0x00AAFF,       // columnas
@@ -32,14 +47,28 @@ pub fn cell_color(cell: char) -> u32 {
     }
 }
 
-fn darken_color(color: u32) -> u32 {
-    let red = ((color >> 16) & 0xFF) * 3 / 4;
+fn scale_color_intensity(color: u32, intensity: u32) -> u32 {
+    let red = ((color >> 16) & 0xFF) * intensity / LIGHT_SCALE;
 
-    let green = ((color >> 8) & 0xFF) * 3 / 4;
+    let green = ((color >> 8) & 0xFF) * intensity / LIGHT_SCALE;
 
-    let blue = (color & 0xFF) * 3 / 4;
+    let blue = (color & 0xFF) * intensity / LIGHT_SCALE;
 
     (red << 16) | (green << 8) | blue
+}
+
+fn wall_light_intensity(distance: f32) -> u32 {
+    let darkness_start = BLOCK_SIZE as f32 * WALL_DARKNESS_START_CELLS;
+
+    let darkness_end = BLOCK_SIZE as f32 * WALL_DARKNESS_END_CELLS;
+
+    let progress = ((distance - darkness_start) / (darkness_end - darkness_start)).clamp(0.0, 1.0);
+
+    let smooth_progress = progress * progress * (3.0 - 2.0 * progress);
+
+    let light = 1.0 - smooth_progress * (1.0 - MIN_WALL_LIGHT);
+
+    (light * LIGHT_SCALE as f32) as u32
 }
 
 pub fn render_3d(
@@ -51,6 +80,7 @@ pub fn render_3d(
 ) {
     let width = framebuffer.width;
     let height = framebuffer.height;
+    let buffer = &mut framebuffer.buffer;
 
     let horizon = height as f32 / 2.0;
 
@@ -84,38 +114,51 @@ pub fn render_3d(
 
             let bottom_clamped = bottom.max(0.0).min((height - 1) as f32) as usize;
 
-            // Dibujar el techo.
-            framebuffer.set_current_color(0x0000FF);
+            let distance_light = wall_light_intensity(distancia_corregida);
 
+            let orientation_light = match hit.side {
+                WallSide::Vertical => LIGHT_SCALE,
+
+                WallSide::Horizontal => LIGHT_SCALE * 3 / 4,
+            };
+
+            let wall_light = distance_light * orientation_light / LIGHT_SCALE;
+
+            // Dibujar el techo.
             for y in 0..top_clamped {
-                framebuffer.point(i, y);
+                buffer[y * width + i] = 0x0000FF;
             }
 
             // Dibujar la pared usando el PNG
             // cargado en memoria.
-            for y in top_clamped..=bottom_clamped {
-                let texture_v = ((y as f32 - top) / wall_height).clamp(0.0, 0.999_999);
+            let wall_texture = textures.for_cell(hit.cell, level_number);
 
-                let texture_color = textures
-                    .for_cell(hit.cell, level_number)
-                    .map(|texture| texture.sample(hit.texture_u, texture_v))
-                    .unwrap_or_else(|| cell_color(hit.cell));
-                let wall_color = match hit.side {
-                    WallSide::Vertical => texture_color,
+            let texture_v_step = 1.0 / wall_height;
 
-                    WallSide::Horizontal => darken_color(texture_color),
-                };
+            let mut texture_v = (top_clamped as f32 - top) * texture_v_step;
 
-                framebuffer.set_current_color(wall_color);
+            if let Some(texture) = wall_texture {
+                for y in top_clamped..=bottom_clamped {
+                    let texture_color = texture.sample(hit.texture_u, texture_v);
 
-                framebuffer.point(i, y);
+                    let illuminated_wall_color = scale_color_intensity(texture_color, wall_light);
+
+                    buffer[y * width + i] = illuminated_wall_color;
+
+                    texture_v += texture_v_step;
+                }
+            } else {
+                let illuminated_wall_color =
+                    scale_color_intensity(cell_color(hit.cell), wall_light);
+
+                for y in top_clamped..=bottom_clamped {
+                    buffer[y * width + i] = illuminated_wall_color;
+                }
             }
 
             // Dibujar el suelo.
-            framebuffer.set_current_color(0x292B30);
-
             for y in bottom_clamped.saturating_add(1)..height {
-                framebuffer.point(i, y);
+                buffer[y * width + i] = 0x292B30;
             }
         }
     }
