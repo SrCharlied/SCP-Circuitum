@@ -6,6 +6,12 @@ pub struct Texture {
     pixels: Vec<u32>,
 }
 
+pub struct TextureSet {
+    wall: Texture,
+    column: Option<Texture>,
+    goal: Option<Texture>,
+}
+
 impl Texture {
     pub fn from_file(path: &str) -> Result<Self, String> {
         let image = ImageReader::open(path)
@@ -63,5 +69,25 @@ impl Texture {
         let texture_y = (normalized_v * self.height as f32) as usize;
 
         self.pixels[texture_y * self.width + texture_x]
+    }
+}
+
+impl TextureSet {
+    pub fn from_wall_file(path: &str) -> Result<Self, String> {
+        Ok(Self {
+            wall: Texture::from_file(path)?,
+            column: None,
+            goal: None,
+        })
+    }
+
+    pub fn for_cell(&self, cell: char) -> Option<&Texture> {
+        match cell {
+            '+' => Some(self.column.as_ref().unwrap_or(&self.wall)),
+
+            'g' | 'G' => self.goal.as_ref(),
+
+            _ => Some(&self.wall),
+        }
     }
 }

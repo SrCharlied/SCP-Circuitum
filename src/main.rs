@@ -18,7 +18,7 @@ use crate::renderer::{
     draw_text, render_3d, render_level_transition, render_minimap, render_pause_menu,
     render_stamina_bar, render_top_down, render_victory_screen, render_welcome_screen,
 };
-use crate::texture::Texture;
+use crate::texture::TextureSet;
 
 const BLOCK_SIZE: usize = 100;
 
@@ -37,7 +37,7 @@ fn main() {
 
     let (mut maze, mut player) = load_maze(game_session.current_level_path(), BLOCK_SIZE);
 
-    let wall_texture = Texture::from_file("./assets/textures/wall_industrial.png")
+    let textures = TextureSet::from_wall_file("./assets/textures/wall_industrial.png")
         .unwrap_or_else(|error| panic!("{error}"));
 
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
@@ -208,7 +208,7 @@ fn main() {
                 if window.is_key_down(Key::M) {
                     render_top_down(&mut framebuffer, &maze, &player);
                 } else {
-                    render_3d(&mut framebuffer, &maze, &player, &wall_texture);
+                    render_3d(&mut framebuffer, &maze, &player, &textures);
 
                     render_minimap(&mut framebuffer, &maze, &player);
                 }

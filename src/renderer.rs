@@ -3,7 +3,7 @@ use crate::framebuffer::Framebuffer;
 use crate::game::VictoryMenuOption;
 use crate::maze::Maze;
 use crate::player::Player;
-use crate::texture::Texture;
+use crate::texture::TextureSet;
 use crate::{BLOCK_SIZE, FOV};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 
@@ -49,7 +49,7 @@ pub fn render_3d(
     framebuffer: &mut Framebuffer,
     maze: &Maze,
     player: &Player,
-    wall_texture: &Texture,
+    textures: &TextureSet,
 ) {
     let width = framebuffer.width;
     let height = framebuffer.height;
@@ -98,12 +98,10 @@ pub fn render_3d(
             for y in top_clamped..=bottom_clamped {
                 let texture_v = ((y as f32 - top) / wall_height).clamp(0.0, 0.999_999);
 
-                let texture_color = if matches!(hit.cell, 'g' | 'G') {
-                    cell_color(hit.cell)
-                } else {
-                    wall_texture.sample(hit.texture_u, texture_v)
-                };
-
+                let texture_color = textures
+                    .for_cell(hit.cell)
+                    .map(|texture| texture.sample(hit.texture_u, texture_v))
+                    .unwrap_or_else(|| cell_color(hit.cell));
                 let wall_color = match hit.side {
                     WallSide::Vertical => texture_color,
 
