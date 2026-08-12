@@ -212,7 +212,13 @@ fn main() {
             }
 
             GameState::Playing | GameState::Paused => {
-                render_3d(&mut framebuffer, &maze, &player, &textures, BLOCK_SIZE);
+                render_3d(
+                    &mut framebuffer,
+                    &maze,
+                    &player,
+                    &textures,
+                    game_session.current_level_number(),
+                );
 
                 render_minimap(&mut framebuffer, &maze, &player);
 
