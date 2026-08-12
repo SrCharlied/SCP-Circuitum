@@ -13,8 +13,4 @@ minifb = "0.28.0"
 nalgebra-glm = "0.21.0"
 font8x8 = "0.3.1"
 
-image = {
-    version = "=0.25.8",
-    default-features = false,
-    features = ["png"],
-}
+image = { version = "=0.25.8", default-features = false, features = ["png"] }

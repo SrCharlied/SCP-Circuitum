@@ -47,6 +47,7 @@ pub fn render_3d(
     maze: &Maze,
     player: &Player,
     textures: &TextureSet,
+    level_number: usize,
 ) {
     let width = framebuffer.width;
     let height = framebuffer.height;
@@ -96,7 +97,7 @@ pub fn render_3d(
                 let texture_v = ((y as f32 - top) / wall_height).clamp(0.0, 0.999_999);
 
                 let texture_color = textures
-                    .for_cell(hit.cell)
+                    .for_cell(hit.cell, level_number)
                     .map(|texture| texture.sample(hit.texture_u, texture_v))
                     .unwrap_or_else(|| cell_color(hit.cell));
                 let wall_color = match hit.side {

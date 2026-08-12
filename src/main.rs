@@ -38,7 +38,10 @@ fn main() {
     let (mut maze, mut player) = load_maze(game_session.current_level_path(), BLOCK_SIZE);
 
     let textures = TextureSet::from_files(
-        "./assets/textures/wall_industrial.png",
+        &[
+            "./assets/textures/wall_industrial.png",
+            "./assets/textures/wall_industrial_connected.png",
+        ],
         "./assets/textures/column_reinforced.png",
         "./assets/textures/goal_elevator.png",
     )
@@ -209,7 +212,7 @@ fn main() {
             }
 
             GameState::Playing | GameState::Paused => {
-                render_3d(&mut framebuffer, &maze, &player, &textures);
+                render_3d(&mut framebuffer, &maze, &player, &textures, BLOCK_SIZE);
 
                 render_minimap(&mut framebuffer, &maze, &player);
 

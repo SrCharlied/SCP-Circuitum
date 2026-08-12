@@ -7,7 +7,7 @@ pub struct Texture {
 }
 
 pub struct TextureSet {
-    wall: Texture,
+    walls_by_level: Vec<Texture>,
     column: Option<Texture>,
     goal: Option<Texture>,
 }
@@ -73,9 +73,22 @@ impl Texture {
 }
 
 impl TextureSet {
-    pub fn from_files(wall_path: &str, column_path: &str, goal_path: &str) -> Result<Self, String> {
+    pub fn from_files(
+        wall_paths: &[&str],
+        column_path: &str,
+        goal_path: &str,
+    ) -> Result<Self, String> {
+        if wall_paths.is_empty() {
+            return Err(String::from("Se necesita al menos una textura de pared"));
+        }
+
+        let walls_by_level = wall_paths
+            .iter()
+            .map(|path| Texture::from_file(path))
+            .collect::<Result<Vec<_>, _>>()?;
+
         Ok(Self {
-            wall: Texture::from_file(wall_path)?,
+            walls_by_level,
 
             column: Some(Texture::from_file(column_path)?),
 
@@ -83,13 +96,51 @@ impl TextureSet {
         })
     }
 
-    pub fn for_cell(&self, cell: char) -> Option<&Texture> {
+    pub fn for_cell(&self, cell: char, level_number: usize) -> Option<&Texture> {
         match cell {
             '+' => self.column.as_ref(),
 
             'g' | 'G' => self.goal.as_ref(),
 
-            _ => Some(&self.wall),
+            _ => self
+                .walls_by_level
+                .get(level_number.saturating_sub(1))
+                .or_else(|| self.walls_by_level.first()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TextureSet;
+
+    #[test]
+    fn selects_a_stable_wall_texture_for_each_level() {
+        let textures = TextureSet::from_files(
+            &[
+                "./assets/textures/wall_industrial.png",
+                "./assets/textures/wall_industrial_connected.png",
+            ],
+            "./assets/textures/column_reinforced.png",
+            "./assets/textures/goal_elevator.png",
+        )
+        .expect("Las texturas de prueba deben cargar correctamente");
+
+        let level_one_wall = textures
+            .for_cell('|', 1)
+            .expect("El nivel 1 debe tener pared");
+        let level_two_wall = textures
+            .for_cell('|', 2)
+            .expect("El nivel 2 debe tener pared");
+
+        assert!(!std::ptr::eq(level_one_wall, level_two_wall));
+        assert!(std::ptr::eq(
+            textures.for_cell('+', 1).expect("Debe existir columna"),
+            textures.for_cell('+', 2).expect("Debe existir columna"),
+        ));
+        assert!(std::ptr::eq(
+            textures.for_cell('g', 1).expect("Debe existir meta"),
+            textures.for_cell('g', 2).expect("Debe existir meta"),
+        ));
     }
 }
