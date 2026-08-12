@@ -10,9 +10,6 @@ use font8x8::{BASIC_FONTS, UnicodeFonts};
 const MINIMAP_CELL_SIZE: usize = 8;
 const MINIMAP_MARGIN: usize = 20;
 
-/// Cantidad de rayos que se lanzan en abanico para formar el campo de visión.
-const NUM_RAYS: usize = 5;
-
 /// Rayos utilizados para representar la
 /// visión del jugador en el minimapa.
 const MINIMAP_VISION_RAYS: usize = 128;
@@ -298,20 +295,12 @@ pub fn render_welcome_screen(framebuffer: &mut Framebuffer) {
 
     draw_centered_text(framebuffer, "A / D - GIRAR", content_y + 235, 2, 0xCCCCCC);
 
-    draw_centered_text(
-        framebuffer,
-        "M - VISTA SUPERIOR",
-        content_y + 280,
-        2,
-        0xCCCCCC,
-    );
-
-    draw_centered_text(framebuffer, "ESC - PAUSA", content_y + 325, 2, 0xCCCCCC);
+    draw_centered_text(framebuffer, "ESC - PAUSA", content_y + 280, 2, 0xCCCCCC);
 
     draw_centered_text(
         framebuffer,
         "ENTER - COMENZAR",
-        content_y + 420,
+        content_y + 375,
         2,
         0xFFFF00,
     );
@@ -459,67 +448,6 @@ pub fn render_minimap(framebuffer: &mut Framebuffer, maze: &Maze, player: &Playe
         5,
         0xFFFF00,
     );
-}
-
-fn draw_cell(framebuffer: &mut Framebuffer, xo: usize, yo: usize, cell: char) {
-    if cell == ' ' {
-        return;
-    }
-
-    framebuffer.set_current_color(cell_color(cell));
-
-    for x in xo..xo + BLOCK_SIZE {
-        for y in yo..yo + BLOCK_SIZE {
-            framebuffer.point(x, y);
-        }
-    }
-}
-
-fn draw_debug_ray(framebuffer: &mut Framebuffer, player: &Player, angulo: f32, distancia: f32) {
-    framebuffer.set_current_color(0xFFDDDD);
-
-    let mut d = 0.0;
-
-    while d <= distancia {
-        let x = player.pos.x + d * angulo.cos();
-
-        let y = player.pos.y + d * angulo.sin();
-
-        if x >= 0.0 && y >= 0.0 {
-            framebuffer.point(x as usize, y as usize);
-        }
-
-        d += 1.0;
-    }
-}
-
-pub fn render_top_down(framebuffer: &mut Framebuffer, maze: &Maze, player: &Player) {
-    for (row, line) in maze.iter().enumerate() {
-        for (col, &cell) in line.iter().enumerate() {
-            draw_cell(framebuffer, col * BLOCK_SIZE, row * BLOCK_SIZE, cell);
-        }
-    }
-
-    framebuffer.set_current_color(0xFFFF00);
-
-    let px = player.pos.x as usize;
-    let py = player.pos.y as usize;
-
-    for x in px.saturating_sub(3)..=px + 3 {
-        for y in py.saturating_sub(3)..=py + 3 {
-            framebuffer.point(x, y);
-        }
-    }
-
-    for i in 0..NUM_RAYS {
-        let ray_fraction = i as f32 / (NUM_RAYS - 1) as f32;
-
-        let angle = player.a - FOV / 2.0 + FOV * ray_fraction;
-
-        if let Some(hit) = cast_ray(maze, player, angle, BLOCK_SIZE) {
-            draw_debug_ray(framebuffer, player, angle, hit.distance);
-        }
-    }
 }
 
 pub fn render_pause_menu(framebuffer: &mut Framebuffer, target_fps: u32) {

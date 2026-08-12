@@ -16,7 +16,7 @@ use crate::maze::load_maze;
 use crate::player::process_events;
 use crate::renderer::{
     draw_text, render_3d, render_level_transition, render_minimap, render_pause_menu,
-    render_stamina_bar, render_top_down, render_victory_screen, render_welcome_screen,
+    render_stamina_bar, render_victory_screen, render_welcome_screen,
 };
 use crate::texture::TextureSet;
 
@@ -209,13 +209,9 @@ fn main() {
             }
 
             GameState::Playing | GameState::Paused => {
-                if window.is_key_down(Key::M) {
-                    render_top_down(&mut framebuffer, &maze, &player);
-                } else {
-                    render_3d(&mut framebuffer, &maze, &player, &textures);
+                render_3d(&mut framebuffer, &maze, &player, &textures);
 
-                    render_minimap(&mut framebuffer, &maze, &player);
-                }
+                render_minimap(&mut framebuffer, &maze, &player);
 
                 if settings.show_fps {
                     draw_text(&mut framebuffer, &fps_text, 20, 20, 2, 0xFFFFFF);
