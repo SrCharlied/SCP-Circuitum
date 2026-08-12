@@ -37,8 +37,11 @@ fn main() {
 
     let (mut maze, mut player) = load_maze(game_session.current_level_path(), BLOCK_SIZE);
 
-    let textures = TextureSet::from_wall_file("./assets/textures/wall_industrial.png")
-        .unwrap_or_else(|error| panic!("{error}"));
+    let textures = TextureSet::from_files(
+        "./assets/textures/wall_industrial.png",
+        "./assets/textures/goal_elevator.png",
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
     framebuffer.set_background_color(0x333355);

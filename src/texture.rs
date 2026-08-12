@@ -73,11 +73,11 @@ impl Texture {
 }
 
 impl TextureSet {
-    pub fn from_wall_file(path: &str) -> Result<Self, String> {
+    pub fn from_files(wall_path: &str, goal_path: &str) -> Result<Self, String> {
         Ok(Self {
-            wall: Texture::from_file(path)?,
+            wall: Texture::from_file(wall_path)?,
             column: None,
-            goal: None,
+            goal: Some(Texture::from_file(goal_path)?),
         })
     }
 
