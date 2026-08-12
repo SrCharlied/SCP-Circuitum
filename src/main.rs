@@ -39,6 +39,7 @@ fn main() {
 
     let textures = TextureSet::from_files(
         "./assets/textures/wall_industrial.png",
+        "./assets/textures/column_reinforced.png",
         "./assets/textures/goal_elevator.png",
     )
     .unwrap_or_else(|error| panic!("{error}"));

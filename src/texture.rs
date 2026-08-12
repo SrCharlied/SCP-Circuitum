@@ -73,17 +73,19 @@ impl Texture {
 }
 
 impl TextureSet {
-    pub fn from_files(wall_path: &str, goal_path: &str) -> Result<Self, String> {
+    pub fn from_files(wall_path: &str, column_path: &str, goal_path: &str) -> Result<Self, String> {
         Ok(Self {
             wall: Texture::from_file(wall_path)?,
-            column: None,
+
+            column: Some(Texture::from_file(column_path)?),
+
             goal: Some(Texture::from_file(goal_path)?),
         })
     }
 
     pub fn for_cell(&self, cell: char) -> Option<&Texture> {
         match cell {
-            '+' => Some(self.column.as_ref().unwrap_or(&self.wall)),
+            '+' => self.column.as_ref(),
 
             'g' | 'G' => self.goal.as_ref(),
 
