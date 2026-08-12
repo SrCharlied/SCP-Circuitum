@@ -14,6 +14,7 @@ pub struct RayHit {
     pub hit_x: f32,
     pub hit_y: f32,
     pub side: WallSide,
+    pub texture_u: f32,
 }
 
 pub fn cast_ray(maze: &Maze, player: &Player, angulo: f32, block_size: usize) -> Option<RayHit> {
@@ -114,12 +115,30 @@ pub fn cast_ray(maze: &Maze, player: &Player, angulo: f32, block_size: usize) ->
 
         let hit_y = player.pos.y + distance * direction_y;
 
+        let wall_position = match side {
+            WallSide::Vertical => hit_y,
+
+            WallSide::Horizontal => hit_x,
+        };
+
+        let mut texture_u = wall_position.rem_euclid(block_size_f32) / block_size_f32;
+
+        let should_flip_texture = matches!(side, WallSide::Vertical) && direction_x > 0.0
+            || matches!(side, WallSide::Horizontal) && direction_y < 0.0;
+
+        if should_flip_texture {
+            texture_u = 1.0 - texture_u;
+        }
+
+        texture_u = texture_u.rem_euclid(1.0);
+
         return Some(RayHit {
             distance,
             cell,
             hit_x,
             hit_y,
             side,
+            texture_u,
         });
     }
 }

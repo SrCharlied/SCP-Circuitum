@@ -3,6 +3,7 @@ use crate::framebuffer::Framebuffer;
 use crate::game::VictoryMenuOption;
 use crate::maze::Maze;
 use crate::player::Player;
+use crate::texture::Texture;
 use crate::{BLOCK_SIZE, FOV};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 
@@ -44,7 +45,12 @@ fn darken_color(color: u32) -> u32 {
     (red << 16) | (green << 8) | blue
 }
 
-pub fn render_3d(framebuffer: &mut Framebuffer, maze: &Maze, player: &Player) {
+pub fn render_3d(
+    framebuffer: &mut Framebuffer,
+    maze: &Maze,
+    player: &Player,
+    wall_texture: &Texture,
+) {
     let width = framebuffer.width;
     let height = framebuffer.height;
 
@@ -87,19 +93,25 @@ pub fn render_3d(framebuffer: &mut Framebuffer, maze: &Maze, player: &Player) {
                 framebuffer.point(i, y);
             }
 
-            // Dibujar la pared. Las caras
-            // horizontales se oscurecen
-            // ligeramente para aprovechar la
-            // orientación calculada por DDA.
-            let wall_color = match hit.side {
-                WallSide::Vertical => cell_color(hit.cell),
-
-                WallSide::Horizontal => darken_color(cell_color(hit.cell)),
-            };
-
-            framebuffer.set_current_color(wall_color);
-
+            // Dibujar la pared usando el PNG
+            // cargado en memoria.
             for y in top_clamped..=bottom_clamped {
+                let texture_v = ((y as f32 - top) / wall_height).clamp(0.0, 0.999_999);
+
+                let texture_color = if matches!(hit.cell, 'g' | 'G') {
+                    cell_color(hit.cell)
+                } else {
+                    wall_texture.sample(hit.texture_u, texture_v)
+                };
+
+                let wall_color = match hit.side {
+                    WallSide::Vertical => texture_color,
+
+                    WallSide::Horizontal => darken_color(texture_color),
+                };
+
+                framebuffer.set_current_color(wall_color);
+
                 framebuffer.point(i, y);
             }
 
