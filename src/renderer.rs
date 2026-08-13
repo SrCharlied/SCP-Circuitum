@@ -133,19 +133,25 @@ pub fn render_3d(
             // cargado en memoria.
             let wall_texture = textures.for_cell(hit.cell, level_number);
 
-            let texture_v_step = 1.0 / wall_height;
-
-            let mut texture_v = (top_clamped as f32 - top) * texture_v_step;
-
             if let Some(texture) = wall_texture {
+                let texture_x = texture.column_index(hit.texture_u);
+
+                let texture_height = texture.height();
+
+                let texture_y_step = texture_height as f32 / wall_height;
+
+                let mut texture_y = (top_clamped as f32 - top) * texture_y_step;
+
                 for y in top_clamped..=bottom_clamped {
-                    let texture_color = texture.sample(hit.texture_u, texture_v);
+                    let texture_y_index = (texture_y as usize).min(texture_height - 1);
+
+                    let texture_color = texture.sample_column(texture_x, texture_y_index);
 
                     let illuminated_wall_color = scale_color_intensity(texture_color, wall_light);
 
                     buffer[y * width + i] = illuminated_wall_color;
 
-                    texture_v += texture_v_step;
+                    texture_y += texture_y_step;
                 }
             } else {
                 let illuminated_wall_color =

@@ -59,15 +59,17 @@ impl Texture {
         })
     }
 
-    pub fn sample(&self, texture_u: f32, texture_v: f32) -> u32 {
+    pub fn column_index(&self, texture_u: f32) -> usize {
         let normalized_u = texture_u.rem_euclid(1.0);
 
-        let normalized_v = texture_v.clamp(0.0, 0.999_999);
+        (normalized_u * self.width as f32) as usize
+    }
 
-        let texture_x = (normalized_u * self.width as f32) as usize;
+    pub fn height(&self) -> usize {
+        self.height
+    }
 
-        let texture_y = (normalized_v * self.height as f32) as usize;
-
+    pub fn sample_column(&self, texture_x: usize, texture_y: usize) -> u32 {
         self.pixels[texture_y * self.width + texture_x]
     }
 }

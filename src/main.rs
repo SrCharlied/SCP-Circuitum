@@ -65,6 +65,14 @@ fn main() {
 
     let mut fps_text = String::from("FPS: --");
 
+    let mut render_3d_total = Duration::ZERO;
+
+    let mut render_3d_max = Duration::ZERO;
+
+    let mut render_3d_samples: u32 = 0;
+
+    let mut render_3d_text = String::from("3D: -- ms | max -- ms");
+
     let mut settings = GameSettings::default();
 
     let mut level_transition_remaining = 0.0_f32;
@@ -212,6 +220,8 @@ fn main() {
             }
 
             GameState::Playing | GameState::Paused => {
+                let render_3d_start = Instant::now();
+
                 render_3d(
                     &mut framebuffer,
                     &maze,
@@ -220,10 +230,19 @@ fn main() {
                     game_session.current_level_number(),
                 );
 
+                let render_3d_elapsed = render_3d_start.elapsed();
+
+                render_3d_total += render_3d_elapsed;
+
+                render_3d_max = render_3d_max.max(render_3d_elapsed);
+
+                render_3d_samples += 1;
+
                 render_minimap(&mut framebuffer, &maze, &player);
 
                 if settings.show_fps {
                     draw_text(&mut framebuffer, &fps_text, 20, 20, 2, 0xFFFFFF);
+                    draw_text(&mut framebuffer, &render_3d_text, 20, 40, 2, 0xFFFFFF);
                 }
 
                 render_stamina_bar(
@@ -261,9 +280,27 @@ fn main() {
 
             fps_text = format!("FPS: {:.0}", measured_fps,);
 
+            if render_3d_samples > 0 {
+                let average_render_3d_ms =
+                    render_3d_total.as_secs_f64() * 1000.0 / render_3d_samples as f64;
+
+                render_3d_text = format!(
+                    "3D: {:.2} ms | max {:.2} ms",
+                    average_render_3d_ms,
+                    render_3d_max.as_secs_f64() * 1000.0,
+                );
+            }
+
             fps_frame_count = 0;
             fps_timer = Instant::now();
+
+            render_3d_total = Duration::ZERO;
+
+            render_3d_max = Duration::ZERO;
+
+            render_3d_samples = 0;
         }
+
         let elapsed_frame_time = frame_start.elapsed();
 
         let target_frame_time = settings.target_frame_time();
