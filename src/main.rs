@@ -49,6 +49,7 @@ fn main() {
 
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
     framebuffer.set_background_color(0x333355);
+    let mut depth_buffer = vec![f32::INFINITY; framebuffer_width];
 
     let mut window = Window::new(
         "SCP_Circuitum",
@@ -224,12 +225,12 @@ fn main() {
 
                 render_3d(
                     &mut framebuffer,
+                    &mut depth_buffer,
                     &maze,
                     &player,
                     &textures,
                     game_session.current_level_number(),
                 );
-
                 let render_3d_elapsed = render_3d_start.elapsed();
 
                 render_3d_total += render_3d_elapsed;

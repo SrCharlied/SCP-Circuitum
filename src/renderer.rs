@@ -73,6 +73,7 @@ fn wall_light_intensity(distance: f32) -> u32 {
 
 pub fn render_3d(
     framebuffer: &mut Framebuffer,
+    depth_buffer: &mut [f32],
     maze: &Maze,
     player: &Player,
     textures: &TextureSet,
@@ -81,6 +82,14 @@ pub fn render_3d(
     let width = framebuffer.width;
     let height = framebuffer.height;
     let buffer = &mut framebuffer.buffer;
+
+    assert_eq!(
+        depth_buffer.len(),
+        width,
+        "El depth buffer debe tener una entrada por columna",
+    );
+
+    depth_buffer.fill(f32::INFINITY);
 
     let horizon = height as f32 / 2.0;
 
@@ -101,6 +110,8 @@ pub fn render_3d(
             if distancia_corregida <= 0.0 {
                 continue;
             }
+
+            depth_buffer[i] = distancia_corregida;
 
             let wall_height = (BLOCK_SIZE as f32 / distancia_corregida) * proyeccion_distancia;
 
