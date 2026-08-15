@@ -168,14 +168,14 @@ mod tests {
     use super::{SpriteTexture, TextureSet};
 
     #[test]
-    fn loads_sprite_transparency() {
-        let sprite = SpriteTexture::from_file("./assets/sprites/test_entity.png")
-            .expect("El sprite de prueba debe cargar correctamente");
+    fn loads_scp_173_transparency() {
+        let sprite = SpriteTexture::from_file("./assets/sprites/scp_173.png")
+            .expect("El sprite de SCP-173 debe cargar correctamente");
 
-        assert_eq!(sprite.width(), 64);
-        assert_eq!(sprite.height(), 96);
+        assert_eq!(sprite.width(), 300);
+        assert_eq!(sprite.height(), 534);
         assert_eq!(sprite.sample(0, 0) >> 24, 0);
-        assert_eq!(sprite.sample(31, 17) >> 24, 255);
+        assert_eq!(sprite.sample(150, 250) >> 24, 255);
     }
 
     #[test]

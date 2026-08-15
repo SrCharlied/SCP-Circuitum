@@ -54,10 +54,10 @@ fn main() {
     let test_sprite = WorldSprite {
         x: 550.0,
         y: 150.0,
-        size: 80.0,
+        size: 120.0,
     };
 
-    let test_sprite_texture = SpriteTexture::from_file("./assets/sprites/test_entity.png")
+    let test_sprite_texture = SpriteTexture::from_file("./assets/sprites/scp_173.png")
         .unwrap_or_else(|error| panic!("{error}"));
 
     let mut window = Window::new(
