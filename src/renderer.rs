@@ -3,7 +3,7 @@ use crate::framebuffer::Framebuffer;
 use crate::game::VictoryMenuOption;
 use crate::maze::Maze;
 use crate::player::Player;
-use crate::texture::TextureSet;
+use crate::texture::{SpriteTexture, TextureSet};
 use crate::{BLOCK_SIZE, FOV};
 use font8x8::{BASIC_FONTS, UnicodeFonts};
 
@@ -36,6 +36,12 @@ const MIN_WALL_LIGHT: f32 = 0.22;
 /// Escala entera utilizada para aplicar luz
 /// sin operaciones de punto flotante por píxel.
 const LIGHT_SCALE: u32 = 256;
+
+pub struct WorldSprite {
+    pub x: f32,
+    pub y: f32,
+    pub size: f32,
+}
 
 pub fn cell_color(cell: char) -> u32 {
     match cell {
@@ -177,6 +183,132 @@ pub fn render_3d(
             for y in bottom_clamped.saturating_add(1)..height {
                 buffer[y * width + i] = 0x292B30;
             }
+        }
+    }
+}
+
+pub fn render_test_sprite(
+    framebuffer: &mut Framebuffer,
+    depth_buffer: &[f32],
+    player: &Player,
+    sprite: &WorldSprite,
+    texture: &SpriteTexture,
+) {
+    let width = framebuffer.width;
+
+    let height = framebuffer.height;
+
+    assert_eq!(
+        depth_buffer.len(),
+        width,
+        "El depth buffer debe tener una entrada por columna",
+    );
+
+    let offset_x = sprite.x - player.pos.x;
+
+    let offset_y = sprite.y - player.pos.y;
+
+    let distance = offset_x.hypot(offset_y);
+
+    if distance <= f32::EPSILON {
+        return;
+    }
+
+    let sprite_angle = offset_y.atan2(offset_x);
+
+    let relative_angle = (sprite_angle - player.a + std::f32::consts::PI)
+        .rem_euclid(std::f32::consts::TAU)
+        - std::f32::consts::PI;
+
+    if relative_angle.abs() > FOV / 2.0 {
+        return;
+    }
+
+    let perpendicular_distance = distance * relative_angle.cos();
+
+    if perpendicular_distance <= f32::EPSILON {
+        return;
+    }
+
+    let projection_distance = (width as f32 / 2.0) / (FOV / 2.0).tan();
+
+    let screen_center_x = width as f32 / 2.0 + relative_angle.tan() * projection_distance;
+
+    let projected_height = sprite.size / perpendicular_distance * projection_distance;
+
+    let projected_width = projected_height * texture.width() as f32 / texture.height() as f32;
+
+    let left = (screen_center_x - projected_width / 2.0).floor() as i32;
+
+    let right = (screen_center_x + projected_width / 2.0).ceil() as i32;
+
+    let top = (height as f32 / 2.0 - projected_height / 2.0).floor() as i32;
+
+    let bottom = (height as f32 / 2.0 + projected_height / 2.0).ceil() as i32;
+
+    let left_clamped = left.max(0) as usize;
+
+    let right_clamped = right.min(width as i32 - 1).max(-1);
+
+    let top_clamped = top.max(0) as usize;
+
+    let bottom_clamped = bottom.min(height as i32 - 1).max(-1);
+
+    if right_clamped < 0
+        || bottom_clamped < 0
+        || left_clamped > right_clamped as usize
+        || top_clamped > bottom_clamped as usize
+    {
+        return;
+    }
+
+    let buffer = &mut framebuffer.buffer;
+
+    for x in left_clamped..=right_clamped as usize {
+        if perpendicular_distance >= depth_buffer[x] {
+            continue;
+        }
+
+        let texture_x =
+            (((x as f32 - left as f32) / projected_width) * texture.width() as f32) as usize;
+
+        let texture_x = texture_x.min(texture.width() - 1);
+
+        for y in top_clamped..=bottom_clamped as usize {
+            let texture_y =
+                (((y as f32 - top as f32) / projected_height) * texture.height() as f32) as usize;
+
+            let texture_y = texture_y.min(texture.height() - 1);
+
+            let pixel = texture.sample(texture_x, texture_y);
+
+            let alpha = pixel >> 24;
+
+            if alpha == 0 {
+                continue;
+            }
+
+            let color = pixel & 0x00FF_FFFF;
+
+            if alpha == 255 {
+                buffer[y * width + x] = color;
+                continue;
+            }
+
+            let background = buffer[y * width + x];
+
+            let inverse_alpha = 255 - alpha;
+
+            let red = (((color >> 16) & 0xFF) * alpha
+                + ((background >> 16) & 0xFF) * inverse_alpha)
+                / 255;
+
+            let green =
+                (((color >> 8) & 0xFF) * alpha + ((background >> 8) & 0xFF) * inverse_alpha) / 255;
+
+            let blue = ((color & 0xFF) * alpha + (background & 0xFF) * inverse_alpha) / 255;
+
+            buffer[y * width + x] = (red << 16) | (green << 8) | blue;
         }
     }
 }

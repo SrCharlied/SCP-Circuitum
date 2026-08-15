@@ -15,10 +15,10 @@ use crate::game::{GameSession, GameSettings, GameState, VictoryMenuOption};
 use crate::maze::load_maze;
 use crate::player::process_events;
 use crate::renderer::{
-    draw_text, render_3d, render_level_transition, render_minimap, render_pause_menu,
-    render_stamina_bar, render_victory_screen, render_welcome_screen,
+    WorldSprite, draw_text, render_3d, render_level_transition, render_minimap, render_pause_menu,
+    render_stamina_bar, render_test_sprite, render_victory_screen, render_welcome_screen,
 };
-use crate::texture::TextureSet;
+use crate::texture::{SpriteTexture, TextureSet};
 
 const BLOCK_SIZE: usize = 100;
 
@@ -50,6 +50,15 @@ fn main() {
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
     framebuffer.set_background_color(0x333355);
     let mut depth_buffer = vec![f32::INFINITY; framebuffer_width];
+
+    let test_sprite = WorldSprite {
+        x: 550.0,
+        y: 150.0,
+        size: 80.0,
+    };
+
+    let test_sprite_texture = SpriteTexture::from_file("./assets/sprites/test_entity.png")
+        .unwrap_or_else(|error| panic!("{error}"));
 
     let mut window = Window::new(
         "SCP_Circuitum",
@@ -231,6 +240,15 @@ fn main() {
                     &textures,
                     game_session.current_level_number(),
                 );
+
+                render_test_sprite(
+                    &mut framebuffer,
+                    &depth_buffer,
+                    &player,
+                    &test_sprite,
+                    &test_sprite_texture,
+                );
+
                 let render_3d_elapsed = render_3d_start.elapsed();
 
                 render_3d_total += render_3d_elapsed;

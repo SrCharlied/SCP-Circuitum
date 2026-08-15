@@ -6,6 +6,12 @@ pub struct Texture {
     pixels: Vec<u32>,
 }
 
+pub struct SpriteTexture {
+    width: usize,
+    height: usize,
+    pixels: Vec<u32>,
+}
+
 pub struct TextureSet {
     walls_by_level: Vec<Texture>,
     column: Option<Texture>,
@@ -74,6 +80,51 @@ impl Texture {
     }
 }
 
+impl SpriteTexture {
+    pub fn from_file(path: &str) -> Result<Self, String> {
+        let image = ImageReader::open(path)
+            .map_err(|error| format!("No se pudo abrir el sprite '{path}': {error}"))?
+            .decode()
+            .map_err(|error| format!("No se pudo decodificar el sprite '{path}': {error}"))?
+            .to_rgba8();
+
+        let width = image.width() as usize;
+
+        let height = image.height() as usize;
+
+        if width == 0 || height == 0 {
+            return Err(format!("El sprite '{path}' no puede estar vacio"));
+        }
+
+        let pixels = image
+            .pixels()
+            .map(|pixel| {
+                let [red, green, blue, alpha] = pixel.0;
+
+                ((alpha as u32) << 24) | ((red as u32) << 16) | ((green as u32) << 8) | blue as u32
+            })
+            .collect();
+
+        Ok(Self {
+            width,
+            height,
+            pixels,
+        })
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    pub fn sample(&self, texture_x: usize, texture_y: usize) -> u32 {
+        self.pixels[texture_y * self.width + texture_x]
+    }
+}
+
 impl TextureSet {
     pub fn from_files(
         wall_paths: &[&str],
@@ -114,7 +165,18 @@ impl TextureSet {
 
 #[cfg(test)]
 mod tests {
-    use super::TextureSet;
+    use super::{SpriteTexture, TextureSet};
+
+    #[test]
+    fn loads_sprite_transparency() {
+        let sprite = SpriteTexture::from_file("./assets/sprites/test_entity.png")
+            .expect("El sprite de prueba debe cargar correctamente");
+
+        assert_eq!(sprite.width(), 64);
+        assert_eq!(sprite.height(), 96);
+        assert_eq!(sprite.sample(0, 0) >> 24, 0);
+        assert_eq!(sprite.sample(31, 17) >> 24, 255);
+    }
 
     #[test]
     fn selects_a_stable_wall_texture_for_each_level() {
