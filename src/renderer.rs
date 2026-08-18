@@ -187,7 +187,7 @@ pub fn render_3d(
     }
 }
 
-pub fn render_test_sprite(
+pub fn render_sprite(
     framebuffer: &mut Framebuffer,
     depth_buffer: &[f32],
     player: &Player,

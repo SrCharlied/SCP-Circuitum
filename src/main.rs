@@ -4,9 +4,11 @@ mod game;
 mod maze;
 mod player;
 mod renderer;
+mod scp173;
 mod texture;
 
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
+use nalgebra_glm::Vec2;
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 
@@ -16,8 +18,9 @@ use crate::maze::load_maze;
 use crate::player::process_events;
 use crate::renderer::{
     WorldSprite, draw_text, render_3d, render_level_transition, render_minimap, render_pause_menu,
-    render_stamina_bar, render_test_sprite, render_victory_screen, render_welcome_screen,
+    render_sprite, render_stamina_bar, render_victory_screen, render_welcome_screen,
 };
+use crate::scp173::Scp173;
 use crate::texture::{SpriteTexture, TextureSet};
 
 const BLOCK_SIZE: usize = 100;
@@ -51,15 +54,14 @@ fn main() {
     framebuffer.set_background_color(0x333355);
     let mut depth_buffer = vec![f32::INFINITY; framebuffer_width];
 
-    let test_sprite = WorldSprite {
-        x: 550.0,
-        y: 150.0,
-        size: 120.0,
-    };
-
-    let test_sprite_texture = SpriteTexture::from_file("./assets/sprites/scp_173.png")
+    let scp_173_texture = SpriteTexture::from_file("./assets/sprites/scp_173.png")
         .unwrap_or_else(|error| panic!("{error}"));
 
+    let scp_173 = Scp173::new(
+        Vec2::new(550.0, 150.0),
+        120.0,
+        scp_173_texture.width() as f32 / scp_173_texture.height() as f32,
+    );
     let mut window = Window::new(
         "SCP_Circuitum",
         window_width,
@@ -241,13 +243,21 @@ fn main() {
                     game_session.current_level_number(),
                 );
 
-                render_test_sprite(
-                    &mut framebuffer,
-                    &depth_buffer,
-                    &player,
-                    &test_sprite,
-                    &test_sprite_texture,
-                );
+                if game_session.current_level_number() == 1 {
+                    let scp_173_sprite = WorldSprite {
+                        x: scp_173.pos.x,
+                        y: scp_173.pos.y,
+                        size: scp_173.height,
+                    };
+
+                    render_sprite(
+                        &mut framebuffer,
+                        &depth_buffer,
+                        &player,
+                        &scp_173_sprite,
+                        &scp_173_texture,
+                    );
+                }
 
                 let render_3d_elapsed = render_3d_start.elapsed();
 
@@ -262,6 +272,25 @@ fn main() {
                 if settings.show_fps {
                     draw_text(&mut framebuffer, &fps_text, 20, 20, 2, 0xFFFFFF);
                     draw_text(&mut framebuffer, &render_3d_text, 20, 40, 2, 0xFFFFFF);
+                }
+
+                if game_session.current_level_number() == 1 {
+                    let scp_173_observed = scp_173.is_observed(&maze, &player, BLOCK_SIZE, FOV);
+
+                    let (observation_text, observation_color) = if scp_173_observed {
+                        ("SCP-173: OBSERVADO", 0x55DD77)
+                    } else {
+                        ("SCP-173: NO OBSERVADO", 0xFF5555)
+                    };
+
+                    draw_text(
+                        &mut framebuffer,
+                        observation_text,
+                        20,
+                        64,
+                        2,
+                        observation_color,
+                    );
                 }
 
                 render_stamina_bar(
