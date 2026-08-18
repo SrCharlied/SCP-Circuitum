@@ -57,7 +57,7 @@ fn main() {
     let scp_173_texture = SpriteTexture::from_file("./assets/sprites/scp_173.png")
         .unwrap_or_else(|error| panic!("{error}"));
 
-    let scp_173 = Scp173::new(
+    let mut scp_173 = Scp173::new(
         Vec2::new(550.0, 150.0),
         120.0,
         scp_173_texture.width() as f32 / scp_173_texture.height() as f32,
@@ -158,6 +158,7 @@ fn main() {
 
                             maze = first_level_maze;
                             player = first_level_player;
+                            scp_173.reset();
 
                             game_state = GameState::Welcome;
 
@@ -178,6 +179,12 @@ fn main() {
 
         if game_state == GameState::Playing {
             process_events(&window, &mut player, &maze, BLOCK_SIZE, delta_time);
+
+            if game_session.current_level_number() == 1 {
+                let scp_173_observed = scp_173.is_observed(&maze, &player, BLOCK_SIZE, FOV);
+
+                scp_173.update(&maze, &player, BLOCK_SIZE, scp_173_observed, delta_time);
+            }
 
             let map_x = player.pos.x as usize / BLOCK_SIZE;
 
