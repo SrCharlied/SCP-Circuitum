@@ -2,12 +2,12 @@ use crate::caster::cast_ray;
 use crate::maze::Maze;
 use crate::player::Player;
 use nalgebra_glm::Vec2;
+use std::collections::VecDeque;
 use std::f32::consts::{PI, TAU};
 
 const LINE_OF_SIGHT_MARGIN: f32 = 1.0;
 const OBSERVATION_SAMPLE_FACTORS: [f32; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
 
-// valores de movimiento
 const MOVEMENT_SPEED_CELLS_PER_SECOND: f32 = 1.8;
 const COLLISION_RADIUS_CELLS: f32 = 0.20;
 const STOP_DISTANCE_CELLS: f32 = 0.35;
@@ -18,6 +18,8 @@ pub struct Scp173 {
     pub height: f32,
     width: f32,
     spawn_pos: Vec2,
+    path: VecDeque<(usize, usize)>,
+    path_target: Option<(usize, usize)>,
 }
 
 impl Scp173 {
@@ -27,16 +29,22 @@ impl Scp173 {
             height,
             width: height * width_to_height_ratio,
             spawn_pos: pos,
+            path: VecDeque::new(),
+            path_target: None,
         }
     }
 
     pub fn reset(&mut self) {
         self.pos = self.spawn_pos;
+        self.path.clear();
+        self.path_target = None;
     }
 
     pub fn is_observed(&self, maze: &Maze, player: &Player, block_size: usize, fov: f32) -> bool {
         let offset_x = self.pos.x - player.pos.x;
+
         let offset_y = self.pos.y - player.pos.y;
+
         let center_distance = offset_x.hypot(offset_y);
 
         if center_distance <= f32::EPSILON {
@@ -44,11 +52,14 @@ impl Scp173 {
         }
 
         let perpendicular_x = -offset_y / center_distance;
+
         let perpendicular_y = offset_x / center_distance;
+
         let half_width = self.width / 2.0;
 
         OBSERVATION_SAMPLE_FACTORS.iter().any(|factor| {
             let sample_x = self.pos.x + perpendicular_x * half_width * factor;
+
             let sample_y = self.pos.y + perpendicular_y * half_width * factor;
 
             sample_is_visible(maze, player, sample_x, sample_y, block_size, fov)
@@ -67,26 +78,85 @@ impl Scp173 {
             return;
         }
 
-        let offset_x = player.pos.x - self.pos.x;
+        let player_offset_x = player.pos.x - self.pos.x;
 
-        let offset_y = player.pos.y - self.pos.y;
+        let player_offset_y = player.pos.y - self.pos.y;
 
-        let distance = offset_x.hypot(offset_y);
+        let player_distance = player_offset_x.hypot(player_offset_y);
 
         let stop_distance = block_size as f32 * STOP_DISTANCE_CELLS;
 
-        if distance <= stop_distance || distance <= f32::EPSILON {
+        if player_distance <= stop_distance || player_distance <= f32::EPSILON {
+            return;
+        }
+
+        let Some(current_cell) = world_to_cell(maze, self.pos.x, self.pos.y, block_size) else {
+            return;
+        };
+
+        let Some(player_cell) = world_to_cell(maze, player.pos.x, player.pos.y, block_size) else {
+            return;
+        };
+
+        if current_cell == player_cell {
+            self.path.clear();
+            self.path_target = Some(player_cell);
+        } else if self.path_target != Some(player_cell) || self.path.is_empty() {
+            self.path = find_path(maze, current_cell, player_cell);
+
+            self.path_target = Some(player_cell);
+
+            if !self.path.is_empty() {
+                let current_center_x = (current_cell.1 as f32 + 0.5) * block_size as f32;
+
+                let current_center_y = (current_cell.0 as f32 + 0.5) * block_size as f32;
+
+                let distance_to_center =
+                    (current_center_x - self.pos.x).hypot(current_center_y - self.pos.y);
+
+                if distance_to_center > f32::EPSILON {
+                    self.path.push_front(current_cell);
+                }
+            }
+        }
+
+        let (target_x, target_y, maximum_distance) =
+            if let Some((target_row, target_column)) = self.path.front().copied() {
+                let center_x = (target_column as f32 + 0.5) * block_size as f32;
+                let center_y = (target_row as f32 + 0.5) * block_size as f32;
+
+                let waypoint_distance = (center_x - self.pos.x).hypot(center_y - self.pos.y);
+
+                (center_x, center_y, waypoint_distance)
+            } else if current_cell == player_cell {
+                (player.pos.x, player.pos.y, player_distance - stop_distance)
+            } else {
+                return;
+            };
+
+        if maximum_distance <= f32::EPSILON {
+            self.path.pop_front();
+            return;
+        }
+
+        let offset_x = target_x - self.pos.x;
+
+        let offset_y = target_y - self.pos.y;
+
+        let target_distance = offset_x.hypot(offset_y);
+
+        if target_distance <= f32::EPSILON {
+            self.path.pop_front();
             return;
         }
 
         let speed = block_size as f32 * MOVEMENT_SPEED_CELLS_PER_SECOND;
 
-        let movement_distance =
-            (speed * delta_time.min(MAX_MOVEMENT_DELTA)).min(distance - stop_distance);
+        let movement_distance = (speed * delta_time.min(MAX_MOVEMENT_DELTA)).min(maximum_distance);
 
-        let direction_x = offset_x / distance;
+        let direction_x = offset_x / target_distance;
 
-        let direction_y = offset_y / distance;
+        let direction_y = offset_y / target_distance;
 
         let radius = block_size as f32 * COLLISION_RADIUS_CELLS;
 
@@ -102,6 +172,94 @@ impl Scp173 {
             self.pos.y = next_y;
         }
     }
+}
+
+fn world_to_cell(maze: &Maze, x: f32, y: f32, block_size: usize) -> Option<(usize, usize)> {
+    if x < 0.0 || y < 0.0 || block_size == 0 {
+        return None;
+    }
+
+    let column = x as usize / block_size;
+
+    let row = y as usize / block_size;
+
+    if is_walkable_cell(maze, row, column) {
+        Some((row, column))
+    } else {
+        None
+    }
+}
+
+fn find_path(maze: &Maze, start: (usize, usize), goal: (usize, usize)) -> VecDeque<(usize, usize)> {
+    if start == goal {
+        return VecDeque::new();
+    }
+
+    let mut visited: Vec<Vec<bool>> = maze.iter().map(|row| vec![false; row.len()]).collect();
+
+    let mut previous: Vec<Vec<Option<(usize, usize)>>> =
+        maze.iter().map(|row| vec![None; row.len()]).collect();
+
+    let mut pending = VecDeque::new();
+
+    visited[start.0][start.1] = true;
+
+    pending.push_back(start);
+
+    const DIRECTIONS: [(isize, isize); 4] = [(-1, 0), (0, -1), (0, 1), (1, 0)];
+
+    while let Some((row, column)) = pending.pop_front() {
+        if (row, column) == goal {
+            break;
+        }
+
+        for (row_delta, column_delta) in DIRECTIONS {
+            let Some(next_row) = row.checked_add_signed(row_delta) else {
+                continue;
+            };
+
+            let Some(next_column) = column.checked_add_signed(column_delta) else {
+                continue;
+            };
+
+            if !is_walkable_cell(maze, next_row, next_column) || visited[next_row][next_column] {
+                continue;
+            }
+
+            visited[next_row][next_column] = true;
+
+            previous[next_row][next_column] = Some((row, column));
+
+            pending.push_back((next_row, next_column));
+        }
+    }
+
+    if !visited[goal.0][goal.1] {
+        return VecDeque::new();
+    }
+
+    let mut path = VecDeque::new();
+
+    let mut current = goal;
+
+    while current != start {
+        path.push_front(current);
+
+        let Some(parent) = previous[current.0][current.1] else {
+            return VecDeque::new();
+        };
+        current = parent;
+    }
+
+    path
+}
+
+fn is_walkable_cell(maze: &Maze, row: usize, column: usize) -> bool {
+    matches!(
+        maze.get(row)
+            .and_then(|maze_row| { maze_row.get(column,) },),
+        Some(' ' | 'g' | 'G')
+    )
 }
 
 fn is_walkable(maze: &Maze, x: f32, y: f32, radius: f32, block_size: usize) -> bool {
@@ -136,7 +294,9 @@ fn sample_is_visible(
     fov: f32,
 ) -> bool {
     let offset_x = sample_x - player.pos.x;
+
     let offset_y = sample_y - player.pos.y;
+
     let sample_distance = offset_x.hypot(offset_y);
 
     if sample_distance <= f32::EPSILON {
@@ -144,6 +304,7 @@ fn sample_is_visible(
     }
 
     let sample_angle = offset_y.atan2(offset_x);
+
     let relative_angle = normalize_angle(sample_angle - player.a);
 
     if relative_angle.abs() > fov / 2.0 {
@@ -163,7 +324,8 @@ fn normalize_angle(angle: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::Scp173;
+    use super::{Scp173, is_walkable};
+
     use crate::maze::Maze;
     use crate::player::Player;
     use nalgebra_glm::Vec2;
@@ -213,13 +375,13 @@ mod tests {
         let mut maze = open_room();
 
         maze[2][2] = '|';
+
         let player = Player::new(Vec2::new(150.0, 250.0), 0.0);
 
         let scp = scp_at(350.0, 250.0);
 
         assert!(!scp.is_observed(&maze, &player, BLOCK_SIZE, FOV,));
     }
-
     #[test]
     fn observes_scp_when_its_edge_intersects_the_fov() {
         let maze = open_room();
@@ -262,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn scp_does_not_cross_walls() {
+    fn scp_routes_around_walls_without_crossing_them() {
         let mut maze = open_room();
 
         maze[2][2] = '|';
@@ -271,13 +433,19 @@ mod tests {
 
         let mut scp = scp_at(150.0, 250.0);
 
-        for _ in 0..120 {
+        for _ in 0..240 {
             scp.update(&maze, &player, BLOCK_SIZE, false, 1.0 / 60.0);
+
+            assert!(is_walkable(
+                &maze,
+                scp.pos.x,
+                scp.pos.y,
+                BLOCK_SIZE as f32 * 0.20,
+                BLOCK_SIZE,
+            ));
         }
 
-        assert!(scp.pos.x <= 180.0 + f32::EPSILON);
-
-        assert_eq!(scp.pos.y, 250.0,);
+        assert!((player.pos - scp.pos).norm() <= 35.0 + f32::EPSILON);
     }
 
     #[test]
