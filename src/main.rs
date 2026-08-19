@@ -1,3 +1,4 @@
+mod audio;
 mod caster;
 mod framebuffer;
 mod game;
@@ -12,6 +13,7 @@ use nalgebra_glm::Vec2;
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 
+use crate::audio::AudioManager;
 use crate::framebuffer::Framebuffer;
 use crate::game::{GameSession, GameSettings, GameState, VictoryMenuOption};
 use crate::maze::load_maze;
@@ -62,6 +64,17 @@ fn main() {
         120.0,
         scp_173_texture.width() as f32 / scp_173_texture.height() as f32,
     );
+    // Si no hay dispositivo de audio el juego continúa en silencio.
+    let mut audio = match AudioManager::new() {
+        Ok(manager) => Some(manager),
+
+        Err(error) => {
+            eprintln!("Audio: {error}. El juego continúa sin sonido.");
+
+            None
+        }
+    };
+
     let mut window = Window::new(
         "SCP_Circuitum",
         window_width,
@@ -225,6 +238,13 @@ fn main() {
 
                 println!("Nivel cargado: {}", game_session.current_level_path(),);
             }
+        }
+
+        // Punto único desde el que se toca el audio: la acción se
+        // deriva del estado ya asentado en este frame, así que
+        // llamarlo cada frame nunca reinicia ni duplica la pista.
+        if let Some(audio) = audio.as_mut() {
+            audio.update_for_state(game_state);
         }
 
         framebuffer.clear();
