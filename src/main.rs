@@ -8,7 +8,7 @@ mod renderer;
 mod scp173;
 mod texture;
 
-use minifb::{Key, KeyRepeat, Window, WindowOptions};
+use minifb::{Key, KeyRepeat, MouseMode, Window, WindowOptions};
 use nalgebra_glm::Vec2;
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
@@ -17,7 +17,7 @@ use crate::audio::AudioManager;
 use crate::framebuffer::Framebuffer;
 use crate::game::{GameSession, GameSettings, GameState, VictoryMenuOption};
 use crate::maze::load_maze;
-use crate::player::process_events;
+use crate::player::{MouseLook, process_events};
 use crate::renderer::{
     WorldSprite, draw_text, render_3d, render_level_transition, render_minimap, render_pause_menu,
     render_sprite, render_stamina_bar, render_victory_screen, render_welcome_screen,
@@ -108,6 +108,10 @@ fn main() {
 
     let mut welcome_enter_locked = false;
 
+    let mut mouse_look = MouseLook::new();
+
+    let mut cursor_hidden = false;
+
     while window.is_open() {
         let frame_start = Instant::now();
 
@@ -190,8 +194,42 @@ fn main() {
             }
         }
 
+        // El mouse se consulta una sola vez por frame. `Discard`
+        // devuelve `None` cuando el cursor sale de la ventana, y eso
+        // descarta la referencia en lugar de arrastrar un salto.
+        let mouse_x = window.get_mouse_pos(MouseMode::Discard).map(|(x, _)| x);
+
+        // La rotación con mouse solo existe en Playing. En cualquier
+        // otro estado se olvida la referencia, así que al reanudar la
+        // primera muestra nueva sirve únicamente de punto de partida.
+        let mouse_rotation_delta = if game_state == GameState::Playing {
+            mouse_look.horizontal_delta(mouse_x)
+        } else {
+            mouse_look.reset();
+
+            0.0
+        };
+
+        // Un solo punto decide la visibilidad del cursor, y solo se
+        // llama al sistema cuando el valor realmente cambia.
+        let should_hide_cursor =
+            matches!(game_state, GameState::Playing | GameState::LevelTransition);
+
+        if should_hide_cursor != cursor_hidden {
+            window.set_cursor_visibility(!should_hide_cursor);
+
+            cursor_hidden = should_hide_cursor;
+        }
+
         if game_state == GameState::Playing {
-            process_events(&window, &mut player, &maze, BLOCK_SIZE, delta_time);
+            process_events(
+                &window,
+                &mut player,
+                &maze,
+                BLOCK_SIZE,
+                delta_time,
+                mouse_rotation_delta,
+            );
 
             if game_session.current_level_number() == 1 {
                 let scp_173_observed = scp_173.is_observed(&maze, &player, BLOCK_SIZE, FOV);
