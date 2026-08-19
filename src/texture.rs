@@ -172,10 +172,15 @@ mod tests {
         let sprite = SpriteTexture::from_file("./assets/sprites/scp_173.png")
             .expect("El sprite de SCP-173 debe cargar correctamente");
 
-        assert_eq!(sprite.width(), 300);
-        assert_eq!(sprite.height(), 534);
+        assert_eq!(sprite.width(), 320);
+        assert_eq!(sprite.height(), 320);
+
+        // La esquina del lienzo es relleno transparente.
         assert_eq!(sprite.sample(0, 0) >> 24, 0);
-        assert_eq!(sprite.sample(150, 250) >> 24, 255);
+
+        // El torso de la figura es opaco. La figura ocupa
+        // la franja x 114..204 del lienzo de 320 px.
+        assert_eq!(sprite.sample(159, 280) >> 24, 255);
     }
 
     #[test]
