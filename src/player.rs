@@ -11,6 +11,47 @@ const PLAYER_RADIUS_FACTOR: f32 = 0.20;
 /// rotación se siente lenta o brusca tras la prueba manual.
 const MOUSE_ROTATION_SENSITIVITY: f32 = 0.0025;
 
+/// Fracción mínima del avance pretendido que hay que recorrer de
+/// verdad para considerar que el jugador se desplazó.
+///
+/// Empujar una pared de frente deja el avance en cero. Rozarla en
+/// diagonal sí cuenta: ahí el jugador se mueve realmente aunque
+/// pierda una de las dos componentes.
+const MINIMUM_TRAVEL_RATIO: f32 = 0.05;
+
+/// Cómo quedó el jugador tras resolver el movimiento del frame.
+///
+/// Describe desplazamiento **real**, ya pasado por las colisiones,
+/// no las teclas que estaban presionadas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayerMotion {
+    Still,
+    Walking,
+    Running,
+}
+
+/// Clasifica el movimiento del frame comparando lo que el jugador
+/// pretendía avanzar con lo que avanzó después de colisionar.
+///
+/// Es una función pura: puede probarse sin abrir una ventana.
+pub fn motion_from_travel(
+    intended_distance: f32,
+    travelled_distance: f32,
+    is_sprinting: bool,
+) -> PlayerMotion {
+    if intended_distance <= f32::EPSILON
+        || travelled_distance <= intended_distance * MINIMUM_TRAVEL_RATIO
+    {
+        return PlayerMotion::Still;
+    }
+
+    if is_sprinting {
+        PlayerMotion::Running
+    } else {
+        PlayerMotion::Walking
+    }
+}
+
 pub const MAX_STAMINA: f32 = 7.0;
 
 const WALK_SPEED: f32 = 350.0;
@@ -150,7 +191,7 @@ pub fn process_events(
     block_size: usize,
     delta_time: f32,
     mouse_delta_x: f32,
-) {
+) -> PlayerMotion {
     const ROTATION_SPEED: f32 = PI * 1.2;
 
     let mut keyboard_rotation = 0.0;
@@ -219,7 +260,14 @@ pub fn process_events(
         movement -= walking_speed * delta_time;
     }
 
+    let mut travelled_distance = 0.0;
+
     if movement != 0.0 {
+        // Se guarda la posición previa para medir el avance real:
+        // el que quede después de que las colisiones descarten los
+        // ejes bloqueados.
+        let previous_position = player.pos;
+
         let delta_x = movement * player.a.cos();
 
         let delta_y = movement * player.a.sin();
@@ -235,13 +283,47 @@ pub fn process_events(
         if is_walkable(maze, player.pos.x, next_y, block_size) {
             player.pos.y = next_y;
         }
+
+        travelled_distance = (player.pos - previous_position).norm();
     }
+
+    motion_from_travel(movement.abs(), travelled_distance, is_sprinting)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MOUSE_ROTATION_SENSITIVITY, MouseLook, normalize_angle, rotated_angle};
+    use super::{
+        MOUSE_ROTATION_SENSITIVITY, MouseLook, PlayerMotion, motion_from_travel, normalize_angle,
+        rotated_angle,
+    };
     use std::f32::consts::{PI, TAU};
+
+    #[test]
+    fn pushing_a_wall_reports_no_movement() {
+        // El avance pretendido existe pero las colisiones lo
+        // anularon por completo.
+        assert_eq!(motion_from_travel(5.0, 0.0, false), PlayerMotion::Still);
+
+        assert_eq!(motion_from_travel(5.0, 0.0, true), PlayerMotion::Still);
+    }
+
+    #[test]
+    fn standing_still_reports_no_movement() {
+        assert_eq!(motion_from_travel(0.0, 0.0, false), PlayerMotion::Still);
+    }
+
+    #[test]
+    fn walking_reports_walking_and_sprinting_reports_running() {
+        assert_eq!(motion_from_travel(5.0, 5.0, false), PlayerMotion::Walking);
+
+        assert_eq!(motion_from_travel(7.0, 7.0, true), PlayerMotion::Running);
+    }
+
+    #[test]
+    fn sliding_along_a_wall_still_counts_as_movement() {
+        // Solo avanzó un eje, pero el jugador se movió.
+        assert_eq!(motion_from_travel(5.0, 3.5, false), PlayerMotion::Walking);
+    }
 
     #[test]
     fn the_first_sample_only_sets_the_reference() {

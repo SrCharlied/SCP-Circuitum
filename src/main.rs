@@ -19,7 +19,7 @@ use crate::framebuffer::Framebuffer;
 use crate::game::{GameSession, GameSettings, GameState, VictoryMenuOption};
 use crate::maze::load_maze;
 use crate::mouse_capture::{MouseCapture, should_capture_cursor};
-use crate::player::{MouseLook, process_events};
+use crate::player::{MouseLook, PlayerMotion, process_events};
 use crate::renderer::{
     WorldSprite, draw_text, render_3d, render_level_transition, render_minimap, render_pause_menu,
     render_sprite, render_stamina_bar, render_victory_screen, render_welcome_screen,
@@ -265,8 +265,12 @@ fn main() {
             cursor_hidden = should_hide_cursor;
         }
 
+        // Desplazamiento real del frame, ya resuelto por las
+        // colisiones. Fuera de Playing el jugador no se mueve.
+        let mut player_motion = PlayerMotion::Still;
+
         if game_state == GameState::Playing {
-            process_events(
+            player_motion = process_events(
                 &window,
                 &mut player,
                 &maze,
@@ -327,6 +331,8 @@ fn main() {
         // llamarlo cada frame nunca reinicia ni duplica la pista.
         if let Some(audio) = audio.as_mut() {
             audio.update_for_state(game_state);
+
+            audio.update_footsteps(game_state, player_motion, delta_time);
         }
 
         framebuffer.clear();

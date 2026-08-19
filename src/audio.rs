@@ -1,9 +1,11 @@
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor};
+use std::sync::Arc;
 
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 
 use crate::game::GameState;
+use crate::player::PlayerMotion;
 
 /// Pista ambiental que acompaña la exploración.
 const AMBIENT_MUSIC_PATH: &str = "./assets/audio/minor_terror.ogg";
@@ -11,6 +13,25 @@ const AMBIENT_MUSIC_PATH: &str = "./assets/audio/minor_terror.ogg";
 /// Volumen inicial moderado para dejar espacio a
 /// futuros efectos de sonido.
 const AMBIENT_MUSIC_VOLUME: f32 = 0.25;
+
+/// Efecto de paso del jugador.
+const FOOTSTEP_PATH: &str = "./assets/audio/footstep.ogg";
+
+/// Por encima de la música ambiental (0.25) para que se escuche con
+/// claridad, sin llegar a taparla.
+const FOOTSTEP_VOLUME: f32 = 0.55;
+
+/// Segundos entre pasos caminando.
+const WALKING_FOOTSTEP_INTERVAL: f32 = 0.45;
+
+/// Segundos entre pasos corriendo. La proporción respecto al
+/// intervalo de caminata sigue a la de las velocidades del jugador
+/// (500 contra 350), así que la zancada se mantiene coherente.
+const RUNNING_FOOTSTEP_INTERVAL: f32 = 0.32;
+
+/// Tope de pasos sonando a la vez. Sin él, un efecto largo podría
+/// acumularse indefinidamente mientras el jugador camina.
+const MAX_CONCURRENT_FOOTSTEPS: usize = 4;
 
 /// Qué debe ocurrir con la música ambiental en el frame actual.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +67,67 @@ pub fn ambient_music_action(state: GameState, already_playing: bool) -> AmbientM
     }
 }
 
+/// Cada cuánto suena un paso según cómo se mueva el jugador.
+/// `None` significa que no debe sonar ninguno.
+pub fn footstep_interval(motion: PlayerMotion) -> Option<f32> {
+    match motion {
+        PlayerMotion::Still => None,
+
+        PlayerMotion::Walking => Some(WALKING_FOOTSTEP_INTERVAL),
+
+        PlayerMotion::Running => Some(RUNNING_FOOTSTEP_INTERVAL),
+    }
+}
+
+/// Temporizador que reparte los pasos en el tiempo.
+///
+/// Es lógica pura basada en `delta_time`, sin dispositivo de audio,
+/// así que la cadencia se puede probar sin hardware.
+#[derive(Debug, Default)]
+pub struct FootstepCadence {
+    time_until_next: f32,
+}
+
+impl FootstepCadence {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Olvida el tiempo acumulado. El próximo paso volverá a sonar
+    /// de inmediato al reanudar la marcha.
+    pub fn reset(&mut self) {
+        self.time_until_next = 0.0;
+    }
+
+    /// Avanza el temporizador y devuelve `true` cuando toca un paso.
+    ///
+    /// Detenerse reinicia la cadencia, así que arrancar a caminar
+    /// suena al instante en lugar de esperar medio intervalo.
+    pub fn advance(&mut self, motion: PlayerMotion, delta_time: f32) -> bool {
+        let Some(interval) = footstep_interval(motion) else {
+            self.reset();
+
+            return false;
+        };
+
+        if self.time_until_next <= 0.0 {
+            self.time_until_next = interval;
+
+            return true;
+        }
+
+        self.time_until_next -= delta_time;
+
+        if self.time_until_next <= 0.0 {
+            self.time_until_next = interval;
+
+            return true;
+        }
+
+        false
+    }
+}
+
 pub struct AudioManager {
     /// Debe permanecer vivo mientras suene la pista: al soltarlo se
     /// cierra el stream del dispositivo y el audio se detiene.
@@ -57,6 +139,19 @@ pub struct AudioManager {
     /// Tras un fallo al abrir o decodificar la pista dejamos de
     /// reintentar, para no repetir el error en cada frame.
     ambient_music_disabled: bool,
+
+    /// El OGG del paso se lee del disco una sola vez. Cada paso
+    /// construye un decodificador sobre estos bytes, nunca vuelve a
+    /// tocar el sistema de archivos.
+    footstep_sound: Option<Arc<[u8]>>,
+
+    /// Pasos sonando ahora mismo. Se podan los terminados en cada
+    /// disparo, así que la lista no crece sin límite.
+    footstep_players: Vec<Player>,
+
+    footstep_cadence: FootstepCadence,
+
+    footsteps_disabled: bool,
 }
 
 impl AudioManager {
@@ -69,10 +164,29 @@ impl AudioManager {
         // simplemente cierra la ventana.
         device_sink.log_on_drop(false);
 
+        // El efecto de paso se carga una sola vez al inicio. Si
+        // falta, el juego sigue: solo se queda sin pasos.
+        let (footstep_sound, footsteps_disabled) = match std::fs::read(FOOTSTEP_PATH) {
+            Ok(bytes) => (Some(Arc::from(bytes.into_boxed_slice())), false),
+
+            Err(error) => {
+                eprintln!(
+                    "Audio: no se pudo abrir '{FOOTSTEP_PATH}': {error}. \
+                     La partida continúa sin pasos."
+                );
+
+                (None, true)
+            }
+        };
+
         Ok(Self {
             device_sink,
             ambient_music: None,
             ambient_music_disabled: false,
+            footstep_sound,
+            footstep_players: Vec::new(),
+            footstep_cadence: FootstepCadence::new(),
+            footsteps_disabled,
         })
     }
 
@@ -135,6 +249,83 @@ impl AudioManager {
 
             AmbientMusicAction::Leave => {}
         }
+    }
+
+    /// Reproduce un paso. Cada uno usa su propio `Player`, que es la
+    /// forma de que suenen a la vez en lugar de encolarse uno
+    /// detrás de otro.
+    fn play_footstep(&mut self) -> Result<(), String> {
+        let Some(footstep_sound) = self.footstep_sound.as_ref() else {
+            return Err(format!("'{FOOTSTEP_PATH}' no está cargado"));
+        };
+
+        // Retirar los que ya terminaron antes de añadir otro.
+        self.footstep_players.retain(|player| !player.empty());
+
+        // Si aun así se llegó al tope, cae el más antiguo. Preferimos
+        // cortar un paso viejo a dejar crecer la lista.
+        while self.footstep_players.len() >= MAX_CONCURRENT_FOOTSTEPS {
+            self.footstep_players.remove(0);
+        }
+
+        // `Arc` se clona barato: el decodificador lee de los bytes ya
+        // residentes en memoria, sin volver al disco.
+        let footstep = Decoder::new(Cursor::new(Arc::clone(footstep_sound)))
+            .map_err(|error| format!("no se pudo decodificar '{FOOTSTEP_PATH}': {error}"))?;
+
+        let player = Player::connect_new(self.device_sink.mixer());
+
+        player.set_volume(FOOTSTEP_VOLUME);
+
+        player.append(footstep);
+
+        self.footstep_players.push(player);
+
+        Ok(())
+    }
+
+    /// Detiene los pasos en curso y reinicia la cadencia.
+    pub fn stop_footsteps(&mut self) {
+        self.footstep_players.clear();
+
+        self.footstep_cadence.reset();
+    }
+
+    /// Punto único desde el que el bucle principal maneja los pasos.
+    ///
+    /// `motion` describe desplazamiento real: si el jugador empuja
+    /// una pared llega como `Still` y no suena nada.
+    pub fn update_footsteps(
+        &mut self,
+        state: GameState,
+        motion: PlayerMotion,
+        delta_time: f32,
+    ) -> bool {
+        // Fuera de la exploración no hay pasos, y lo que quedara
+        // sonando se corta para que pausar no deje audio colgado.
+        if state != GameState::Playing {
+            self.stop_footsteps();
+
+            return false;
+        }
+
+        if !self.footstep_cadence.advance(motion, delta_time) {
+            return false;
+        }
+
+        if self.footsteps_disabled {
+            return false;
+        }
+
+        if let Err(error) = self.play_footstep() {
+            eprintln!("Audio: {error}. La partida continúa sin pasos.");
+
+            self.footsteps_disabled = true;
+
+            return false;
+        }
+
+        true
     }
 }
 
@@ -212,5 +403,123 @@ mod tests {
             ambient_music_action(GameState::Playing, false),
             AmbientMusicAction::Start,
         );
+    }
+}
+
+#[cfg(test)]
+mod footstep_tests {
+    use super::{
+        FOOTSTEP_PATH, FootstepCadence, RUNNING_FOOTSTEP_INTERVAL, WALKING_FOOTSTEP_INTERVAL,
+        footstep_interval,
+    };
+    use crate::player::PlayerMotion;
+
+    /// Cuenta los pasos disparados al mantener `motion` durante
+    /// `seconds`, simulando frames de 60 FPS.
+    fn steps_over(motion: PlayerMotion, seconds: f32) -> usize {
+        let mut cadence = FootstepCadence::new();
+
+        let delta_time = 1.0 / 60.0;
+
+        let frames = (seconds / delta_time).round() as usize;
+
+        (0..frames)
+            .filter(|_| cadence.advance(motion, delta_time))
+            .count()
+    }
+
+    #[test]
+    fn standing_still_never_plays_a_footstep() {
+        assert_eq!(steps_over(PlayerMotion::Still, 5.0), 0);
+
+        assert_eq!(footstep_interval(PlayerMotion::Still), None);
+    }
+
+    #[test]
+    fn walking_plays_one_footstep_per_interval() {
+        let seconds = 4.5;
+
+        let expected = (seconds / WALKING_FOOTSTEP_INTERVAL).floor() as usize;
+
+        let steps = steps_over(PlayerMotion::Walking, seconds);
+
+        // El primer paso suena de inmediato, así que hay uno más que
+        // intervalos completos.
+        assert!(
+            steps == expected || steps == expected + 1,
+            "se esperaban ~{expected} pasos y hubo {steps}",
+        );
+    }
+
+    #[test]
+    fn running_uses_a_shorter_interval_than_walking() {
+        assert!(RUNNING_FOOTSTEP_INTERVAL < WALKING_FOOTSTEP_INTERVAL);
+
+        let seconds = 4.5;
+
+        assert!(
+            steps_over(PlayerMotion::Running, seconds) > steps_over(PlayerMotion::Walking, seconds),
+        );
+    }
+
+    #[test]
+    fn a_footstep_does_not_fire_on_every_frame() {
+        let seconds = 2.0;
+
+        let frames = (seconds * 60.0) as usize;
+
+        let steps = steps_over(PlayerMotion::Running, seconds);
+
+        assert!(steps > 0);
+
+        assert!(steps < frames, "sonaron {steps} pasos en {frames} frames");
+    }
+
+    #[test]
+    fn the_first_step_after_starting_to_walk_is_immediate() {
+        let mut cadence = FootstepCadence::new();
+
+        assert!(cadence.advance(PlayerMotion::Walking, 1.0 / 60.0));
+
+        // El siguiente frame ya no dispara.
+        assert!(!cadence.advance(PlayerMotion::Walking, 1.0 / 60.0));
+    }
+
+    #[test]
+    fn stopping_resets_the_cadence() {
+        let mut cadence = FootstepCadence::new();
+
+        cadence.advance(PlayerMotion::Walking, 1.0 / 60.0);
+
+        // Detenerse limpia el temporizador acumulado.
+        assert!(!cadence.advance(PlayerMotion::Still, 1.0 / 60.0));
+
+        // Y al reanudar vuelve a sonar de inmediato.
+        assert!(cadence.advance(PlayerMotion::Walking, 1.0 / 60.0));
+    }
+
+    #[test]
+    fn an_explicit_reset_makes_the_next_step_immediate() {
+        let mut cadence = FootstepCadence::new();
+
+        cadence.advance(PlayerMotion::Walking, 1.0 / 60.0);
+
+        assert!(!cadence.advance(PlayerMotion::Walking, 1.0 / 60.0));
+
+        cadence.reset();
+
+        assert!(cadence.advance(PlayerMotion::Walking, 1.0 / 60.0));
+    }
+
+    #[test]
+    fn the_footstep_asset_decodes_from_memory() {
+        // No abre dispositivo de audio: solo comprueba que rodio
+        // entiende el archivo que se cargará en memoria.
+        let bytes = std::fs::read(FOOTSTEP_PATH).expect("el efecto de paso debe existir");
+
+        assert!(!bytes.is_empty());
+
+        rodio::Decoder::new(std::io::Cursor::new(bytes))
+            .expect("rodio debe poder decodificar el efecto de paso");
     }
 }
