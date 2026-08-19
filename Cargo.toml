@@ -15,3 +15,8 @@ font8x8 = "0.3.1"
 
 image = { version = "=0.25.8", default-features = false, features = ["png"] }
 rodio = { version = "0.22", default-features = false, features = ["playback", "vorbis"] }
+
+# Confinamiento y recentrado del cursor. minifb ya depende de winapi
+# 0.3.9 en Windows, así que esto no agrega crates nuevos al árbol.
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3.9", features = ["windef", "winuser"] }

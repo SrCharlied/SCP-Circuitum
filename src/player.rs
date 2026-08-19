@@ -94,8 +94,11 @@ impl MouseLook {
     }
 }
 
-/// Reduce un ángulo al rango (-PI, PI] para que no crezca sin
+/// Reduce un ángulo al rango [-PI, PI) para que no crezca sin
 /// límite mientras el jugador gira.
+///
+/// `rem_euclid` devuelve [0, TAU), así que el extremo incluido es
+/// `-PI` y el excluido es `PI`.
 pub fn normalize_angle(angle: f32) -> f32 {
     (angle + PI).rem_euclid(TAU) - PI
 }
@@ -298,7 +301,7 @@ mod tests {
         for steps in 0..64 {
             let angle = normalize_angle(steps as f32 * 1.7);
 
-            assert!(angle > -PI && angle <= PI, "ángulo fuera de rango: {angle}");
+            assert!(angle >= -PI && angle < PI, "ángulo fuera de rango: {angle}");
         }
 
         // Girar muchas vueltas no hace crecer el ángulo.
@@ -308,7 +311,16 @@ mod tests {
             angle = rotated_angle(angle, 400.0, 0.0);
         }
 
-        assert!(angle > -PI && angle <= PI, "ángulo fuera de rango: {angle}");
+        assert!(angle >= -PI && angle < PI, "ángulo fuera de rango: {angle}");
+    }
+
+    #[test]
+    fn the_normalized_range_includes_minus_pi_and_excludes_pi() {
+        // El rango real es [-PI, PI): `rem_euclid` devuelve [0, TAU),
+        // así que media vuelta cae siempre en el extremo negativo.
+        assert_eq!(normalize_angle(-PI), -PI);
+
+        assert_eq!(normalize_angle(PI), -PI);
     }
 
     #[test]

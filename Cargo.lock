@@ -906,6 +906,7 @@ dependencies = [
  "minifb",
  "nalgebra-glm",
  "rodio",
+ "winapi",
 ]
 
 [[package]]

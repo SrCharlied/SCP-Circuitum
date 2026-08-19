@@ -3,6 +3,7 @@ mod caster;
 mod framebuffer;
 mod game;
 mod maze;
+mod mouse_capture;
 mod player;
 mod renderer;
 mod scp173;
@@ -17,6 +18,7 @@ use crate::audio::AudioManager;
 use crate::framebuffer::Framebuffer;
 use crate::game::{GameSession, GameSettings, GameState, VictoryMenuOption};
 use crate::maze::load_maze;
+use crate::mouse_capture::{MouseCapture, should_capture_cursor};
 use crate::player::{MouseLook, process_events};
 use crate::renderer::{
     WorldSprite, draw_text, render_3d, render_level_transition, render_minimap, render_pause_menu,
@@ -110,6 +112,9 @@ fn main() {
 
     let mut mouse_look = MouseLook::new();
 
+    // Su `Drop` libera el cursor pase lo que pase al salir de `main`.
+    let mut mouse_capture = MouseCapture::new();
+
     let mut cursor_hidden = false;
 
     while window.is_open() {
@@ -194,26 +199,65 @@ fn main() {
             }
         }
 
+        // Perder el foco libera el cursor: dejarlo confinado
+        // atraparía el puntero fuera del juego tras un Alt+Tab.
+        let window_is_active = window.is_active();
+
+        let capture_requested = should_capture_cursor(game_state, window_is_active);
+
         // El mouse se consulta una sola vez por frame. `Discard`
         // devuelve `None` cuando el cursor sale de la ventana, y eso
         // descarta la referencia en lugar de arrastrar un salto.
         let mouse_x = window.get_mouse_pos(MouseMode::Discard).map(|(x, _)| x);
 
-        // La rotación con mouse solo existe en Playing. En cualquier
-        // otro estado se olvida la referencia, así que al reanudar la
-        // primera muestra nueva sirve únicamente de punto de partida.
-        let mouse_rotation_delta = if game_state == GameState::Playing {
-            mouse_look.horizontal_delta(mouse_x)
+        let mouse_rotation_delta = if capture_requested {
+            let was_capturing = mouse_capture.is_active();
+
+            if mouse_capture.engage(window.get_window_handle()) {
+                // Con el cursor confinado la referencia es el centro
+                // del área cliente, no la muestra anterior: se mide
+                // contra él y después se devuelve el cursor ahí, así
+                // que el giro no tiene tope.
+                let (window_width, _) = window.get_size();
+
+                let client_center_x = window_width as f32 / 2.0;
+
+                // La primera captura solo centra el cursor; medir
+                // contra el centro sin haber centrado antes sería un
+                // salto.
+                let delta = if was_capturing {
+                    mouse_x.map(|x| x - client_center_x).unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+
+                // Recentrar después de leer, nunca antes: si no, el
+                // movimiento programático se confundiría con el del
+                // jugador.
+                mouse_capture.recenter();
+
+                // Este camino no usa la referencia relativa.
+                mouse_look.reset();
+
+                delta
+            } else {
+                // Sin captura —otra plataforma, o Win32 falló— se
+                // conserva el comportamiento anterior.
+                mouse_look.horizontal_delta(mouse_x)
+            }
         } else {
+            mouse_capture.release();
+
             mouse_look.reset();
 
             0.0
         };
 
         // Un solo punto decide la visibilidad del cursor, y solo se
-        // llama al sistema cuando el valor realmente cambia.
-        let should_hide_cursor =
-            matches!(game_state, GameState::Playing | GameState::LevelTransition);
+        // llama al sistema cuando el valor realmente cambia. Se usa
+        // `set_cursor_visibility` de minifb y nunca `ShowCursor` de
+        // Win32, para no desbalancear su contador interno.
+        let should_hide_cursor = capture_requested || game_state == GameState::LevelTransition;
 
         if should_hide_cursor != cursor_hidden {
             window.set_cursor_visibility(!should_hide_cursor);
