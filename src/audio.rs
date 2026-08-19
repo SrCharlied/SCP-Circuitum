@@ -42,12 +42,16 @@ pub enum AmbientMusicAction {
 }
 
 /// La música ambiental pertenece a la partida en curso: suena
-/// mientras se explora, se pausa o se cambia de nivel, y calla
-/// cuando todavía no empezó o cuando la sesión ya terminó.
+/// mientras se explora, se pausa, se cambia de nivel o se lee el
+/// informe del sector, y calla cuando todavía no empezó o cuando la
+/// sesión ya terminó.
 fn music_belongs_to(state: GameState) -> bool {
     matches!(
         state,
-        GameState::Playing | GameState::Paused | GameState::LevelTransition
+        GameState::Playing
+            | GameState::Paused
+            | GameState::LevelTransition
+            | GameState::LevelSuccess
     )
 }
 

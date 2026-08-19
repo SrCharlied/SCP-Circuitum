@@ -1,11 +1,14 @@
 use crate::caster::{WallSide, cast_ray};
 use crate::framebuffer::Framebuffer;
-use crate::game::VictoryMenuOption;
+use crate::game::{
+    LevelSuccessOption, VictoryMenuOption, level_count as game_level_count,
+    level_info as game_level_info,
+};
 use crate::maze::Maze;
 use crate::player::Player;
 use crate::texture::{SpriteTexture, TextureSet};
 use crate::{BLOCK_SIZE, FOV};
-use font8x8::{BASIC_FONTS, UnicodeFonts};
+use font8x8::{BASIC_FONTS, LATIN_FONTS, UnicodeFonts};
 
 const MINIMAP_CELL_SIZE: usize = 8;
 const MINIMAP_MARGIN: usize = 20;
@@ -401,7 +404,13 @@ fn draw_char(
         return;
     }
 
-    let Some(glyph) = BASIC_FONTS.get(character) else {
+    // `BASIC_FONTS` cubre ASCII. Los acentos del español viven en
+    // el bloque latino extendido, así que se consulta como respaldo
+    // en lugar de dejar un hueco en la palabra.
+    let Some(glyph) = BASIC_FONTS
+        .get(character)
+        .or_else(|| LATIN_FONTS.get(character))
+    else {
         return;
     };
 
@@ -464,6 +473,558 @@ fn draw_centered_text(
     let x = framebuffer.width.saturating_sub(text_width) / 2;
 
     draw_text(framebuffer, text, x, y, scale, color);
+}
+
+/// Paleta compartida por el terminal de despliegue y el informe de
+/// éxito, para que ambos se lean como la misma instalación.
+mod terminal_palette {
+    pub const BACKGROUND: u32 = 0x05070B;
+    pub const PANEL: u32 = 0x10141B;
+    pub const PANEL_DEEP: u32 = 0x0A0D13;
+    pub const BORDER: u32 = 0x27303B;
+    pub const TEXT: u32 = 0x5FA97C;
+    pub const TEXT_DIM: u32 = 0x3C6B51;
+    pub const LABEL: u32 = 0x7C8C99;
+    pub const SELECTED: u32 = 0xC8912F;
+    pub const ALERT: u32 = 0x8E2B2B;
+}
+
+/// Ancho en píxeles que ocupa un texto con la fuente 8x8.
+fn text_width(text: &str, scale: usize) -> usize {
+    text.chars().count() * 9 * scale
+}
+
+/// Panel con marco, la unidad visual del terminal.
+fn draw_panel(
+    framebuffer: &mut Framebuffer,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    fill_color: u32,
+    border_color: u32,
+) {
+    if width <= 4 || height <= 4 {
+        return;
+    }
+
+    fill_rect(framebuffer, x, y, width, height, border_color);
+
+    fill_rect(framebuffer, x + 2, y + 2, width - 4, height - 4, fill_color);
+}
+
+/// Línea divisoria horizontal de un panel.
+fn draw_divider(framebuffer: &mut Framebuffer, x: usize, y: usize, width: usize, color: u32) {
+    fill_rect(framebuffer, x, y, width, 2, color);
+}
+
+/// Oscurece una de cada `step` filas.
+///
+/// El patrón depende solo de la coordenada, nunca del número de
+/// frame, así que no parpadea ni introduce aleatoriedad.
+fn draw_scanlines(framebuffer: &mut Framebuffer, step: usize, intensity: u32) {
+    if step == 0 {
+        return;
+    }
+
+    let width = framebuffer.width;
+    let height = framebuffer.height;
+    let buffer = &mut framebuffer.buffer;
+
+    for y in (0..height).step_by(step) {
+        let row_start = y * width;
+
+        for x in 0..width {
+            let index = row_start + x;
+
+            buffer[index] = scale_color_intensity(buffer[index], intensity);
+        }
+    }
+}
+
+/// Cabecera común: barra superior con título y subtítulo.
+fn draw_terminal_header(framebuffer: &mut Framebuffer, title: &str, subtitle: &str) {
+    use terminal_palette as palette;
+
+    let width = framebuffer.width;
+
+    draw_panel(
+        framebuffer,
+        40,
+        34,
+        width - 80,
+        96,
+        palette::PANEL,
+        palette::BORDER,
+    );
+
+    draw_text(framebuffer, title, 70, 56, 3, palette::TEXT);
+
+    draw_text(framebuffer, subtitle, 70, 96, 1, palette::TEXT_DIM);
+
+    // Indicador de enlace activo, a la derecha de la cabecera.
+    let indicator_label = "ENLACE ACTIVO";
+
+    let indicator_x = width - 70 - text_width(indicator_label, 1);
+
+    fill_rect(framebuffer, indicator_x - 24, 66, 12, 12, palette::TEXT);
+
+    draw_text(
+        framebuffer,
+        indicator_label,
+        indicator_x,
+        68,
+        1,
+        palette::TEXT_DIM,
+    );
+}
+
+/// Pie común con las teclas disponibles.
+fn draw_terminal_footer(framebuffer: &mut Framebuffer, keys: &str) {
+    use terminal_palette as palette;
+
+    let width = framebuffer.width;
+    let height = framebuffer.height;
+
+    draw_divider(framebuffer, 40, height - 92, width - 80, palette::BORDER);
+
+    let keys_x = width.saturating_sub(text_width(keys, 2)) / 2;
+
+    draw_text(framebuffer, keys, keys_x, height - 72, 2, palette::LABEL);
+}
+
+/// Terminal de despliegue: lista de sectores a la izquierda y el
+/// expediente del sector resaltado a la derecha.
+pub fn render_level_selection(framebuffer: &mut Framebuffer, selected_index: usize) {
+    use terminal_palette as palette;
+
+    let width = framebuffer.width;
+    let height = framebuffer.height;
+
+    fill_rect(framebuffer, 0, 0, width, height, palette::BACKGROUND);
+
+    draw_terminal_header(
+        framebuffer,
+        "TERMINAL DE DESPLIEGUE",
+        "FUNDACIÓN // SELECCIÓN DE SECTOR // ACCESO AUTORIZADO",
+    );
+
+    let content_y = 170;
+    let content_height = height - content_y - 120;
+
+    // ----- Lista de sectores -----
+    let list_x = 60;
+    let list_width = 460;
+
+    draw_panel(
+        framebuffer,
+        list_x,
+        content_y,
+        list_width,
+        content_height,
+        palette::PANEL_DEEP,
+        palette::BORDER,
+    );
+
+    draw_text(
+        framebuffer,
+        "SECTORES DISPONIBLES",
+        list_x + 22,
+        content_y + 22,
+        1,
+        palette::LABEL,
+    );
+
+    draw_divider(
+        framebuffer,
+        list_x + 22,
+        content_y + 44,
+        list_width - 44,
+        palette::BORDER,
+    );
+
+    let entry_height = 92;
+    let entry_gap = 16;
+
+    for index in 0..game_level_count() {
+        let Some(info) = game_level_info(index) else {
+            continue;
+        };
+
+        let entry_y = content_y + 66 + index * (entry_height + entry_gap);
+
+        let is_selected = index == selected_index;
+
+        let entry_fill = if is_selected {
+            0x1B1710
+        } else {
+            palette::PANEL
+        };
+
+        let entry_border = if is_selected {
+            palette::SELECTED
+        } else {
+            palette::BORDER
+        };
+
+        draw_panel(
+            framebuffer,
+            list_x + 22,
+            entry_y,
+            list_width - 44,
+            entry_height,
+            entry_fill,
+            entry_border,
+        );
+
+        let entry_text_color = if is_selected {
+            palette::SELECTED
+        } else {
+            palette::TEXT
+        };
+
+        // Marcador de selección al estilo terminal.
+        let marker = if is_selected { ">" } else { " " };
+
+        draw_text(
+            framebuffer,
+            &format!("{marker} SECTOR {:02}", index + 1),
+            list_x + 40,
+            entry_y + 20,
+            2,
+            entry_text_color,
+        );
+
+        draw_text(
+            framebuffer,
+            info.sector,
+            list_x + 40,
+            entry_y + 56,
+            1,
+            palette::TEXT_DIM,
+        );
+    }
+
+    // ----- Expediente del sector resaltado -----
+    let file_x = list_x + list_width + 40;
+    let file_width = width - file_x - 60;
+
+    draw_panel(
+        framebuffer,
+        file_x,
+        content_y,
+        file_width,
+        content_height,
+        palette::PANEL,
+        palette::BORDER,
+    );
+
+    draw_text(
+        framebuffer,
+        "EXPEDIENTE DEL SECTOR",
+        file_x + 26,
+        content_y + 22,
+        1,
+        palette::LABEL,
+    );
+
+    draw_divider(
+        framebuffer,
+        file_x + 26,
+        content_y + 44,
+        file_width - 52,
+        palette::BORDER,
+    );
+
+    if let Some(info) = game_level_info(selected_index) {
+        draw_text(
+            framebuffer,
+            info.sector,
+            file_x + 26,
+            content_y + 76,
+            2,
+            palette::TEXT,
+        );
+
+        let field_x = file_x + 26;
+        let value_x = field_x + 200;
+
+        draw_text(
+            framebuffer,
+            "ESTADO",
+            field_x,
+            content_y + 150,
+            1,
+            palette::LABEL,
+        );
+
+        draw_text(
+            framebuffer,
+            info.status,
+            value_x,
+            content_y + 146,
+            2,
+            palette::ALERT,
+        );
+
+        draw_text(
+            framebuffer,
+            "RIESGO",
+            field_x,
+            content_y + 208,
+            1,
+            palette::LABEL,
+        );
+
+        draw_text(
+            framebuffer,
+            info.risk,
+            value_x,
+            content_y + 204,
+            2,
+            palette::ALERT,
+        );
+
+        draw_divider(
+            framebuffer,
+            field_x,
+            content_y + 262,
+            file_width - 52,
+            palette::BORDER,
+        );
+
+        draw_text(
+            framebuffer,
+            "NOTA DE CAMPO",
+            field_x,
+            content_y + 288,
+            1,
+            palette::LABEL,
+        );
+
+        draw_text(
+            framebuffer,
+            info.note,
+            field_x,
+            content_y + 316,
+            2,
+            palette::TEXT,
+        );
+
+        // Barra de advertencia inferior del expediente.
+        let warning_y = content_y + content_height - 96;
+
+        draw_panel(
+            framebuffer,
+            field_x,
+            warning_y,
+            file_width - 52,
+            62,
+            0x1A0C0E,
+            palette::ALERT,
+        );
+
+        draw_text(
+            framebuffer,
+            "PROTOCOLO: LOCALIZAR SALIDA",
+            field_x + 20,
+            warning_y + 22,
+            2,
+            palette::ALERT,
+        );
+    }
+
+    draw_terminal_footer(
+        framebuffer,
+        "W / S - SECTOR    ENTER - DESPLEGAR    ESC - VOLVER",
+    );
+
+    draw_scanlines(framebuffer, 3, 232);
+}
+
+/// Informe interno tras completar un sector.
+pub fn render_level_success(
+    framebuffer: &mut Framebuffer,
+    level_number: usize,
+    sector: &str,
+    selected_option: LevelSuccessOption,
+    has_next_level: bool,
+) {
+    use terminal_palette as palette;
+
+    let width = framebuffer.width;
+    let height = framebuffer.height;
+
+    fill_rect(framebuffer, 0, 0, width, height, palette::BACKGROUND);
+
+    draw_terminal_header(
+        framebuffer,
+        "INFORME DE OPERACIÓN",
+        "FUNDACIÓN // REGISTRO INTERNO // NO DIFUNDIR",
+    );
+
+    let panel_x = 150;
+    let panel_width = width - panel_x * 2;
+    let panel_y = 180;
+    let panel_height = 340;
+
+    draw_panel(
+        framebuffer,
+        panel_x,
+        panel_y,
+        panel_width,
+        panel_height,
+        palette::PANEL,
+        palette::BORDER,
+    );
+
+    let heading = "OBJETIVO CUMPLIDO";
+
+    let heading_x = panel_x + panel_width.saturating_sub(text_width(heading, 4)) / 2;
+
+    draw_text(
+        framebuffer,
+        heading,
+        heading_x,
+        panel_y + 44,
+        4,
+        palette::TEXT,
+    );
+
+    draw_divider(
+        framebuffer,
+        panel_x + 40,
+        panel_y + 116,
+        panel_width - 80,
+        palette::BORDER,
+    );
+
+    let field_x = panel_x + 46;
+    let value_x = field_x + 230;
+
+    draw_text(
+        framebuffer,
+        "SECTOR COMPLETADO",
+        field_x,
+        panel_y + 152,
+        1,
+        palette::LABEL,
+    );
+
+    draw_text(
+        framebuffer,
+        &format!("SECTOR {level_number:02}"),
+        value_x,
+        panel_y + 146,
+        2,
+        palette::TEXT,
+    );
+
+    draw_text(
+        framebuffer,
+        "DESIGNACIÓN",
+        field_x,
+        panel_y + 206,
+        1,
+        palette::LABEL,
+    );
+
+    draw_text(
+        framebuffer,
+        sector,
+        value_x,
+        panel_y + 200,
+        2,
+        palette::TEXT,
+    );
+
+    draw_text(
+        framebuffer,
+        "SUJETO",
+        field_x,
+        panel_y + 260,
+        1,
+        palette::LABEL,
+    );
+
+    draw_text(
+        framebuffer,
+        "OPERATIVO - SIN BAJAS",
+        value_x,
+        panel_y + 254,
+        2,
+        palette::TEXT_DIM,
+    );
+
+    // ----- Opciones -----
+    let advance_label = if has_next_level {
+        "CONTINUAR AL SIGUIENTE SECTOR"
+    } else {
+        "FINALIZAR PROTOCOLO"
+    };
+
+    let option_width = panel_width;
+    let option_height = 74;
+    let option_x = panel_x;
+    let first_option_y = panel_y + panel_height + 44;
+
+    let options = [
+        (advance_label, LevelSuccessOption::Advance),
+        ("VOLVER AL TERMINAL", LevelSuccessOption::BackToTerminal),
+    ];
+
+    for (index, (label, option)) in options.iter().enumerate() {
+        let option_y = first_option_y + index * (option_height + 18);
+
+        let is_selected = *option == selected_option;
+
+        let fill_color = if is_selected {
+            0x1B1710
+        } else {
+            palette::PANEL_DEEP
+        };
+
+        let border_color = if is_selected {
+            palette::SELECTED
+        } else {
+            palette::BORDER
+        };
+
+        draw_panel(
+            framebuffer,
+            option_x,
+            option_y,
+            option_width,
+            option_height,
+            fill_color,
+            border_color,
+        );
+
+        let text_color = if is_selected {
+            palette::SELECTED
+        } else {
+            palette::TEXT_DIM
+        };
+
+        let marker = if is_selected { ">" } else { " " };
+
+        let label_text = format!("{marker} {label}");
+
+        let label_x = option_x + option_width.saturating_sub(text_width(&label_text, 2)) / 2;
+
+        draw_text(
+            framebuffer,
+            &label_text,
+            label_x,
+            option_y + 24,
+            2,
+            text_color,
+        );
+    }
+
+    draw_terminal_footer(framebuffer, "W / S - OPCIÓN    ENTER - CONFIRMAR");
+
+    draw_scanlines(framebuffer, 3, 232);
 }
 
 pub fn render_welcome_screen(framebuffer: &mut Framebuffer) {
@@ -1350,4 +1911,119 @@ pub fn render_level_transition(
         2,
         if red_emergency { 0xFF6870 } else { 0xD8D9DC },
     );
+}
+
+#[cfg(test)]
+mod terminal_screen_tests {
+    use super::{render_level_selection, render_level_success, text_width};
+    use crate::framebuffer::Framebuffer;
+    use crate::game::{LevelSuccessOption, level_count, level_info};
+
+    const WINDOW_WIDTH: usize = 1300;
+    const WINDOW_HEIGHT: usize = 900;
+
+    fn window_framebuffer() -> Framebuffer {
+        Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT)
+    }
+
+    #[test]
+    fn the_deployment_terminal_renders_every_sector() {
+        let mut framebuffer = window_framebuffer();
+
+        for index in 0..level_count() {
+            render_level_selection(&mut framebuffer, index);
+        }
+    }
+
+    #[test]
+    fn the_success_report_renders_in_both_variants() {
+        let mut framebuffer = window_framebuffer();
+
+        for has_next_level in [true, false] {
+            for option in [
+                LevelSuccessOption::Advance,
+                LevelSuccessOption::BackToTerminal,
+            ] {
+                for index in 0..level_count() {
+                    let info = level_info(index).expect("el sector debe existir");
+
+                    render_level_success(
+                        &mut framebuffer,
+                        index + 1,
+                        info.sector,
+                        option,
+                        has_next_level,
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_dossier_text_fits_inside_its_panel() {
+        // Mismas medidas que usa `render_level_selection`.
+        let file_x = 60 + 460 + 40;
+        let file_width = WINDOW_WIDTH - file_x - 60;
+
+        let value_x_offset = 26 + 200;
+
+        for index in 0..level_count() {
+            let info = level_info(index).expect("el sector debe existir");
+
+            // Título del expediente, a escala 2 desde el margen.
+            assert!(
+                text_width(info.sector, 2) + 26 <= file_width,
+                "el nombre del sector {index} se sale del panel",
+            );
+
+            // Nota de campo, a escala 2 desde el margen.
+            assert!(
+                text_width(info.note, 2) + 26 <= file_width,
+                "la nota del sector {index} se sale del panel",
+            );
+
+            // Estado y riesgo se dibujan en la columna de valores.
+            for value in [info.status, info.risk] {
+                assert!(
+                    text_width(value, 2) + value_x_offset <= file_width,
+                    "un valor del sector {index} se sale del panel",
+                );
+            }
+
+            // La lista de la izquierda es más estrecha.
+            assert!(
+                text_width(info.sector, 1) + 40 <= 460,
+                "el nombre del sector {index} se sale de la lista",
+            );
+        }
+    }
+
+    #[test]
+    fn the_success_report_labels_fit_inside_the_window() {
+        let panel_width = WINDOW_WIDTH - 150 * 2;
+
+        for label in [
+            "OBJETIVO CUMPLIDO",
+            "> CONTINUAR AL SIGUIENTE SECTOR",
+            "> FINALIZAR PROTOCOLO",
+            "> VOLVER AL TERMINAL",
+        ] {
+            let scale = if label == "OBJETIVO CUMPLIDO" { 4 } else { 2 };
+
+            assert!(
+                text_width(label, scale) <= panel_width,
+                "'{label}' no cabe en el panel del informe",
+            );
+        }
+
+        for footer in [
+            "W / S - SECTOR    ENTER - DESPLEGAR    ESC - VOLVER",
+            "W / S - OPCIÓN    ENTER - CONFIRMAR",
+        ] {
+            assert!(
+                text_width(footer, 2) <= WINDOW_WIDTH,
+                "el pie '{footer}' no cabe en la ventana",
+            );
+        }
+    }
 }

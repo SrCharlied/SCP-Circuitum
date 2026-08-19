@@ -16,13 +16,17 @@ use std::time::{Duration, Instant};
 
 use crate::audio::AudioManager;
 use crate::framebuffer::Framebuffer;
-use crate::game::{GameSession, GameSettings, GameState, VictoryMenuOption};
+use crate::game::{
+    GameSession, GameSettings, GameState, LevelSelectionMenu, LevelSuccessOption,
+    LevelSuccessOutcome, VictoryMenuOption, confirm_level_success, state_after_reaching_goal,
+};
 use crate::maze::load_maze;
 use crate::mouse_capture::{MouseCapture, should_capture_cursor};
 use crate::player::{MouseLook, PlayerMotion, process_events};
 use crate::renderer::{
-    WorldSprite, draw_text, render_3d, render_level_transition, render_minimap, render_pause_menu,
-    render_sprite, render_stamina_bar, render_victory_screen, render_welcome_screen,
+    WorldSprite, draw_text, render_3d, render_level_selection, render_level_success,
+    render_level_transition, render_minimap, render_pause_menu, render_sprite, render_stamina_bar,
+    render_victory_screen, render_welcome_screen,
 };
 use crate::scp173::Scp173;
 use crate::texture::{SpriteTexture, TextureSet};
@@ -108,7 +112,14 @@ fn main() {
 
     let mut victory_menu_option = VictoryMenuOption::default();
 
-    let mut welcome_enter_locked = false;
+    // Enter queda bloqueado tras cada confirmación hasta que se
+    // suelte la tecla: mantenerla pulsada no debe atravesar varias
+    // pantallas seguidas.
+    let mut enter_locked = false;
+
+    let mut level_selection_menu = LevelSelectionMenu::new();
+
+    let mut level_success_option = LevelSuccessOption::default();
 
     let mut mouse_look = MouseLook::new();
 
@@ -124,16 +135,108 @@ fn main() {
 
         previous_frame = frame_start;
 
+        // Enter se resuelve una sola vez por frame. Mientras siga
+        // pulsado tras una confirmación no vuelve a valer, así que
+        // no encadena pantallas.
+        let enter_pressed = if enter_locked {
+            if !window.is_key_down(Key::Enter) {
+                enter_locked = false;
+            }
+
+            false
+        } else {
+            window.is_key_pressed(Key::Enter, KeyRepeat::No)
+        };
+
+        // Arriba y abajo comparten significado con W y S en los menús.
+        let menu_next = window.is_key_pressed(Key::S, KeyRepeat::No)
+            || window.is_key_pressed(Key::Down, KeyRepeat::No);
+
+        let menu_previous = window.is_key_pressed(Key::W, KeyRepeat::No)
+            || window.is_key_pressed(Key::Up, KeyRepeat::No);
+
         match game_state {
             GameState::Welcome => {
-                if welcome_enter_locked {
-                    if !window.is_key_down(Key::Enter) {
-                        welcome_enter_locked = false;
-                    }
-                } else if window.is_key_pressed(Key::Enter, KeyRepeat::No) {
-                    game_state = GameState::Playing;
+                if enter_pressed {
+                    game_state = GameState::LevelSelection;
 
-                    previous_frame = Instant::now();
+                    level_selection_menu = LevelSelectionMenu::new();
+
+                    enter_locked = true;
+                }
+            }
+
+            GameState::LevelSelection => {
+                if window.is_key_pressed(Key::Escape, KeyRepeat::No) {
+                    game_state = GameState::Welcome;
+                } else {
+                    if menu_next {
+                        level_selection_menu.select_next();
+                    }
+
+                    if menu_previous {
+                        level_selection_menu.select_previous();
+                    }
+
+                    if enter_pressed
+                        && game_session.select_level(level_selection_menu.selected_index())
+                    {
+                        let (selected_maze, selected_player) =
+                            load_maze(game_session.current_level_path(), BLOCK_SIZE);
+
+                        maze = selected_maze;
+                        player = selected_player;
+                        scp_173.reset();
+
+                        game_state = GameState::Playing;
+
+                        enter_locked = true;
+
+                        previous_frame = Instant::now();
+
+                        println!("Despliegue en: {}", game_session.current_level_path(),);
+                    }
+                }
+            }
+
+            GameState::LevelSuccess => {
+                if menu_next {
+                    level_success_option.select_next();
+                }
+
+                if menu_previous {
+                    level_success_option.select_previous();
+                }
+
+                if enter_pressed {
+                    enter_locked = true;
+
+                    match confirm_level_success(level_success_option, game_session.has_next_level())
+                    {
+                        LevelSuccessOutcome::ContinueToNextLevel => {
+                            if game_session.advance_level() {
+                                game_state = GameState::LevelTransition;
+
+                                level_transition_remaining = LEVEL_TRANSITION_DURATION;
+
+                                println!("Elevador hacia: {}", game_session.current_level_path(),);
+                            }
+                        }
+
+                        LevelSuccessOutcome::FinishProtocol => {
+                            game_state = GameState::Victory;
+
+                            victory_menu_option = VictoryMenuOption::default();
+
+                            println!("¡Último nivel completado! Victoria.");
+                        }
+
+                        LevelSuccessOutcome::ReturnToTerminal => {
+                            game_state = GameState::LevelSelection;
+
+                            level_selection_menu = LevelSelectionMenu::new();
+                        }
+                    }
                 }
             }
 
@@ -170,7 +273,7 @@ fn main() {
                     victory_menu_option.select_previous();
                 }
 
-                if window.is_key_pressed(Key::Enter, KeyRepeat::No) {
+                if enter_pressed {
                     match victory_menu_option {
                         VictoryMenuOption::MainMenu => {
                             game_session.reset();
@@ -186,7 +289,7 @@ fn main() {
 
                             victory_menu_option = VictoryMenuOption::default();
 
-                            welcome_enter_locked = true;
+                            enter_locked = true;
 
                             previous_frame = Instant::now();
                         }
@@ -292,19 +395,17 @@ fn main() {
             let current_cell = maze.get(map_y).and_then(|row| row.get(map_x)).copied();
 
             if matches!(current_cell, Some('g' | 'G')) {
-                if game_session.advance_level() {
-                    game_state = GameState::LevelTransition;
+                // Pisar la meta abre el informe; no avanza de nivel
+                // por su cuenta. El avance lo confirma el jugador.
+                game_state = state_after_reaching_goal();
 
-                    level_transition_remaining = LEVEL_TRANSITION_DURATION;
+                level_success_option = LevelSuccessOption::default();
 
-                    println!("Elevador hacia: {}", game_session.current_level_path(),);
-                } else {
-                    game_state = GameState::Victory;
+                // Evita que un Enter que venga de antes confirme el
+                // informe en el mismo instante en que aparece.
+                enter_locked = true;
 
-                    victory_menu_option = VictoryMenuOption::default();
-
-                    println!("¡Último nivel completado! Victoria.");
-                }
+                println!("Sector completado: {}", game_session.current_level_path(),);
             }
         }
 
@@ -340,6 +441,20 @@ fn main() {
         match game_state {
             GameState::Welcome => {
                 render_welcome_screen(&mut framebuffer);
+            }
+
+            GameState::LevelSelection => {
+                render_level_selection(&mut framebuffer, level_selection_menu.selected_index());
+            }
+
+            GameState::LevelSuccess => {
+                render_level_success(
+                    &mut framebuffer,
+                    game_session.current_level_number(),
+                    game_session.current_level_info().sector,
+                    level_success_option,
+                    game_session.has_next_level(),
+                );
             }
 
             GameState::Victory => {

@@ -282,4 +282,14 @@ mod tests {
     fn victory_does_not_request_capture() {
         assert!(!should_capture_cursor(GameState::Victory, true));
     }
+
+    #[test]
+    fn the_deployment_terminal_does_not_request_capture() {
+        assert!(!should_capture_cursor(GameState::LevelSelection, true));
+    }
+
+    #[test]
+    fn the_success_report_does_not_request_capture() {
+        assert!(!should_capture_cursor(GameState::LevelSuccess, true));
+    }
 }
