@@ -40,6 +40,100 @@ const MIN_WALL_LIGHT: f32 = 0.22;
 /// sin operaciones de punto flotante por píxel.
 const LIGHT_SCALE: u32 = 256;
 
+/// Distancia a partir de la cual los planos empiezan a apagarse.
+const PLANE_LIGHT_START_CELLS: f32 = 0.4;
+
+/// Distancia a la que los planos alcanzan su luz mínima.
+const PLANE_LIGHT_END_CELLS: f32 = 9.0;
+
+/// Luz mínima de los planos lejanos. Por encima de cero para que el
+/// horizonte no caiga a negro absoluto.
+const MIN_PLANE_LIGHT: f32 = 0.14;
+
+/// Techo de luz de los planos, para que el suelo cercano no se queme.
+const MAX_PLANE_LIGHT: f32 = 0.88;
+
+/// El techo recibe algo menos de luz que el suelo.
+const CEILING_LIGHT_FACTOR: f32 = 0.80;
+
+/// Tope de distancia de un plano. Sin él, las filas junto al
+/// horizonte producen coordenadas enormes y con ellas moiré.
+const MAX_PLANE_DISTANCE_CELLS: f32 = 24.0;
+
+/// Color de la fila exacta del horizonte, donde la proyección del
+/// plano es singular.
+const HORIZON_COLOR: u32 = 0x0B0D0C;
+
+/// Datos de una fila de pantalla que solo dependen de su altura.
+///
+/// Se calculan una vez por frame y se reutilizan en cada columna,
+/// tanto para el suelo como para el techo: ambos planos están a la
+/// misma distancia del ojo en filas simétricas.
+struct PlaneRow {
+    distance: f32,
+    floor_light: u32,
+    ceiling_light: u32,
+    is_horizon: bool,
+}
+
+fn plane_light_intensity(distance: f32, factor: f32) -> u32 {
+    let light_start = BLOCK_SIZE as f32 * PLANE_LIGHT_START_CELLS;
+
+    let light_end = BLOCK_SIZE as f32 * PLANE_LIGHT_END_CELLS;
+
+    let progress = ((distance - light_start) / (light_end - light_start)).clamp(0.0, 1.0);
+
+    let smooth_progress = progress * progress * (3.0 - 2.0 * progress);
+
+    let light = 1.0 - smooth_progress * (1.0 - MIN_PLANE_LIGHT);
+
+    let clamped = (light * factor).clamp(MIN_PLANE_LIGHT, MAX_PLANE_LIGHT);
+
+    (clamped * LIGHT_SCALE as f32) as u32
+}
+
+/// Precalcula distancia e iluminación de cada fila.
+///
+/// `row_distance = camera_height * projection_distance / |y - horizon|`
+/// medido en el centro del píxel, así que la fila del horizonte se
+/// detecta y se aparta en lugar de dividir entre cero.
+fn build_plane_rows(height: usize, horizon: f32, projection_distance: f32) -> Vec<PlaneRow> {
+    // El ojo está a media altura de celda: por eso el borde superior
+    // de una pared coincide exactamente con el techo a su distancia.
+    let camera_height = BLOCK_SIZE as f32 / 2.0;
+
+    let max_distance = BLOCK_SIZE as f32 * MAX_PLANE_DISTANCE_CELLS;
+
+    (0..height)
+        .map(|y| {
+            let vertical_offset = (y as f32 + 0.5) - horizon;
+
+            let magnitude = vertical_offset.abs();
+
+            // Media fila es lo mínimo que puede separar el centro de
+            // un píxel del horizonte, así que por debajo de eso la
+            // fila se trata como singular.
+            if magnitude < 0.5 {
+                return PlaneRow {
+                    distance: max_distance,
+                    floor_light: 0,
+                    ceiling_light: 0,
+                    is_horizon: true,
+                };
+            }
+
+            let distance = (camera_height * projection_distance / magnitude).min(max_distance);
+
+            PlaneRow {
+                distance,
+                floor_light: plane_light_intensity(distance, 1.0),
+                ceiling_light: plane_light_intensity(distance, CEILING_LIGHT_FACTOR),
+                is_horizon: false,
+            }
+        })
+        .collect()
+}
+
 pub struct WorldSprite {
     pub x: f32,
     pub y: f32,
@@ -106,86 +200,166 @@ pub fn render_3d(
 
     let delta_beta = FOV / (width - 1) as f32;
 
+    // Distancia e iluminación por fila: una sola vez por frame, no
+    // por columna y mucho menos por píxel.
+    let plane_rows = build_plane_rows(height, horizon, proyeccion_distancia);
+
+    let horizon_row = plane_rows
+        .iter()
+        .position(|row| row.is_horizon)
+        .unwrap_or(height / 2);
+
+    let floor_texture = textures.floor();
+
+    let ceiling_texture = textures.ceiling();
+
+    let inverse_block_size = 1.0 / BLOCK_SIZE as f32;
+
     for i in 0..width {
         let beta = -FOV / 2.0 + delta_beta * i as f32;
 
         let ray_angle = player.a + beta;
 
+        // Trigonometría una vez por columna.
+        let cos_beta = beta.cos();
+
+        let inverse_cos_beta = if cos_beta.abs() <= f32::EPSILON {
+            0.0
+        } else {
+            1.0 / cos_beta
+        };
+
+        // Dirección corregida: dividir entre cos(beta) deja los
+        // planos en el mismo espacio de profundidad que las paredes,
+        // así que el suelo no se curva hacia los bordes.
+        let direction_x = ray_angle.cos() * inverse_cos_beta;
+
+        let direction_y = ray_angle.sin() * inverse_cos_beta;
+
+        // Franja que cubrirá la pared. Sin impacto, los planos se
+        // reparten toda la columna y no queda fondo expuesto.
+        let mut wall_span: Option<(usize, usize)> = None;
+
         if let Some(hit) = cast_ray(maze, player, ray_angle, BLOCK_SIZE) {
-            let distancia_corregida = hit.distance * beta.cos();
+            let distancia_corregida = hit.distance * cos_beta;
 
             // Evita dividir entre cero si el jugador queda
             // demasiado cerca o dentro de una pared.
-            if distancia_corregida <= 0.0 {
+            if distancia_corregida > 0.0 {
+                depth_buffer[i] = distancia_corregida;
+
+                let wall_height = (BLOCK_SIZE as f32 / distancia_corregida) * proyeccion_distancia;
+
+                let top = horizon - wall_height / 2.0;
+
+                let bottom = horizon + wall_height / 2.0;
+
+                // Recortar la estaca para que quede dentro
+                // de los límites verticales del framebuffer.
+                let top_clamped = top.max(0.0).min((height - 1) as f32) as usize;
+
+                let bottom_clamped = bottom.max(0.0).min((height - 1) as f32) as usize;
+
+                let distance_light = wall_light_intensity(distancia_corregida);
+
+                let orientation_light = match hit.side {
+                    WallSide::Vertical => LIGHT_SCALE,
+
+                    WallSide::Horizontal => LIGHT_SCALE * 3 / 4,
+                };
+
+                let wall_light = distance_light * orientation_light / LIGHT_SCALE;
+
+                // Dibujar la pared usando el PNG
+                // cargado en memoria.
+                let wall_texture = textures.for_cell(hit.cell, level_number);
+
+                if let Some(texture) = wall_texture {
+                    let texture_x = texture.column_index(hit.texture_u);
+
+                    let texture_height = texture.height();
+
+                    let texture_y_step = texture_height as f32 / wall_height;
+
+                    let mut texture_y = (top_clamped as f32 - top) * texture_y_step;
+
+                    for y in top_clamped..=bottom_clamped {
+                        let texture_y_index = (texture_y as usize).min(texture_height - 1);
+
+                        let texture_color = texture.sample_column(texture_x, texture_y_index);
+
+                        let illuminated_wall_color =
+                            scale_color_intensity(texture_color, wall_light);
+
+                        buffer[y * width + i] = illuminated_wall_color;
+
+                        texture_y += texture_y_step;
+                    }
+                } else {
+                    let illuminated_wall_color =
+                        scale_color_intensity(cell_color(hit.cell), wall_light);
+
+                    for y in top_clamped..=bottom_clamped {
+                        buffer[y * width + i] = illuminated_wall_color;
+                    }
+                }
+
+                wall_span = Some((top_clamped, bottom_clamped));
+            }
+        }
+
+        // Filas que quedan libres por encima y por debajo de la
+        // pared. Su unión con la franja de la pared cubre la columna
+        // completa, así que no puede quedar un hueco.
+        let (ceiling_end, floor_start) = match wall_span {
+            Some((top_clamped, bottom_clamped)) => (top_clamped, bottom_clamped + 1),
+
+            None => (horizon_row, horizon_row + 1),
+        };
+
+        // ----- Techo -----
+        for y in 0..ceiling_end.min(height) {
+            let row = &plane_rows[y];
+
+            if row.is_horizon {
+                buffer[y * width + i] = HORIZON_COLOR;
+
                 continue;
             }
 
-            depth_buffer[i] = distancia_corregida;
+            let world_x = player.pos.x + direction_x * row.distance;
 
-            let wall_height = (BLOCK_SIZE as f32 / distancia_corregida) * proyeccion_distancia;
+            let world_y = player.pos.y + direction_y * row.distance;
 
-            let top = horizon - wall_height / 2.0;
+            let texture_color = ceiling_texture
+                .sample_wrapped(world_x * inverse_block_size, world_y * inverse_block_size);
 
-            let bottom = horizon + wall_height / 2.0;
+            buffer[y * width + i] = scale_color_intensity(texture_color, row.ceiling_light);
+        }
 
-            // Recortar la estaca para que quede dentro
-            // de los límites verticales del framebuffer.
-            let top_clamped = top.max(0.0).min((height - 1) as f32) as usize;
+        // ----- Fila del horizonte, si la pared no la tapa -----
+        if wall_span.is_none() && horizon_row < height {
+            buffer[horizon_row * width + i] = HORIZON_COLOR;
+        }
 
-            let bottom_clamped = bottom.max(0.0).min((height - 1) as f32) as usize;
+        // ----- Suelo -----
+        for y in floor_start.min(height)..height {
+            let row = &plane_rows[y];
 
-            let distance_light = wall_light_intensity(distancia_corregida);
+            if row.is_horizon {
+                buffer[y * width + i] = HORIZON_COLOR;
 
-            let orientation_light = match hit.side {
-                WallSide::Vertical => LIGHT_SCALE,
-
-                WallSide::Horizontal => LIGHT_SCALE * 3 / 4,
-            };
-
-            let wall_light = distance_light * orientation_light / LIGHT_SCALE;
-
-            // Dibujar el techo.
-            for y in 0..top_clamped {
-                buffer[y * width + i] = 0x0000FF;
+                continue;
             }
 
-            // Dibujar la pared usando el PNG
-            // cargado en memoria.
-            let wall_texture = textures.for_cell(hit.cell, level_number);
+            let world_x = player.pos.x + direction_x * row.distance;
 
-            if let Some(texture) = wall_texture {
-                let texture_x = texture.column_index(hit.texture_u);
+            let world_y = player.pos.y + direction_y * row.distance;
 
-                let texture_height = texture.height();
+            let texture_color = floor_texture
+                .sample_wrapped(world_x * inverse_block_size, world_y * inverse_block_size);
 
-                let texture_y_step = texture_height as f32 / wall_height;
-
-                let mut texture_y = (top_clamped as f32 - top) * texture_y_step;
-
-                for y in top_clamped..=bottom_clamped {
-                    let texture_y_index = (texture_y as usize).min(texture_height - 1);
-
-                    let texture_color = texture.sample_column(texture_x, texture_y_index);
-
-                    let illuminated_wall_color = scale_color_intensity(texture_color, wall_light);
-
-                    buffer[y * width + i] = illuminated_wall_color;
-
-                    texture_y += texture_y_step;
-                }
-            } else {
-                let illuminated_wall_color =
-                    scale_color_intensity(cell_color(hit.cell), wall_light);
-
-                for y in top_clamped..=bottom_clamped {
-                    buffer[y * width + i] = illuminated_wall_color;
-                }
-            }
-
-            // Dibujar el suelo.
-            for y in bottom_clamped.saturating_add(1)..height {
-                buffer[y * width + i] = 0x292B30;
-            }
+            buffer[y * width + i] = scale_color_intensity(texture_color, row.floor_light);
         }
     }
 }
@@ -2025,5 +2199,212 @@ mod terminal_screen_tests {
                 "el pie '{footer}' no cabe en la ventana",
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod plane_casting_tests {
+    use super::{HORIZON_COLOR, build_plane_rows, render_3d};
+    use crate::framebuffer::Framebuffer;
+    use crate::maze::Maze;
+    use crate::player::Player;
+    use crate::texture::TextureSet;
+    use crate::{BLOCK_SIZE, FOV};
+    use nalgebra_glm::Vec2;
+
+    const WINDOW_WIDTH: usize = 1300;
+    const WINDOW_HEIGHT: usize = 900;
+
+    fn projection_distance() -> f32 {
+        (WINDOW_WIDTH as f32 / 2.0) / (FOV / 2.0).tan()
+    }
+
+    fn textures() -> TextureSet {
+        TextureSet::from_files(
+            &[
+                "./assets/textures/wall_industrial.png",
+                "./assets/textures/wall_industrial_connected.png",
+            ],
+            "./assets/textures/column_reinforced.png",
+            "./assets/textures/goal_elevator.png",
+            "./assets/textures/floor_industrial.png",
+            "./assets/textures/ceiling_industrial.png",
+        )
+        .expect("las texturas deben cargar")
+    }
+
+    #[test]
+    fn the_horizon_row_never_divides_by_zero() {
+        let horizon = WINDOW_HEIGHT as f32 / 2.0;
+
+        let rows = build_plane_rows(WINDOW_HEIGHT, horizon, projection_distance());
+
+        assert_eq!(rows.len(), WINDOW_HEIGHT);
+
+        for (y, row) in rows.iter().enumerate() {
+            assert!(
+                row.distance.is_finite(),
+                "la fila {y} produjo una distancia no finita: {}",
+                row.distance,
+            );
+
+            assert!(row.distance > 0.0, "la fila {y} produjo distancia <= 0");
+
+            assert!(!row.distance.is_nan(), "la fila {y} produjo NaN");
+        }
+
+        // Debe existir exactamente una fila tratada como singular por
+        // cada lado del horizonte cuando este cae en un borde entero.
+        let horizon_rows = rows.iter().filter(|row| row.is_horizon).count();
+
+        assert!(
+            horizon_rows <= 2,
+            "demasiadas filas marcadas como horizonte: {horizon_rows}",
+        );
+    }
+
+    #[test]
+    fn world_coordinates_stay_finite_next_to_the_horizon() {
+        let horizon = WINDOW_HEIGHT as f32 / 2.0;
+
+        let rows = build_plane_rows(WINDOW_HEIGHT, horizon, projection_distance());
+
+        let player = Player::new(Vec2::new(150.0, 150.0), 0.7);
+
+        let horizon_row = WINDOW_HEIGHT / 2;
+
+        // Las filas inmediatamente encima y debajo del horizonte son
+        // las que más estiran la proyección.
+        for y in horizon_row.saturating_sub(3)..(horizon_row + 4).min(WINDOW_HEIGHT) {
+            let row = &rows[y];
+
+            let world_x = player.pos.x + player.a.cos() * row.distance;
+
+            let world_y = player.pos.y + player.a.sin() * row.distance;
+
+            assert!(world_x.is_finite(), "world_x no finito en la fila {y}");
+
+            assert!(world_y.is_finite(), "world_y no finito en la fila {y}");
+
+            let texture_u = world_x / BLOCK_SIZE as f32;
+
+            let texture_v = world_y / BLOCK_SIZE as f32;
+
+            assert!(texture_u.rem_euclid(1.0).is_finite());
+
+            assert!(texture_v.rem_euclid(1.0).is_finite());
+        }
+    }
+
+    #[test]
+    fn the_renderer_keeps_the_whole_framebuffer() {
+        let (maze, player) = crate::maze::load_maze("./levels/level_01.txt", BLOCK_SIZE);
+
+        let mut framebuffer = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        let mut depth_buffer = vec![f32::INFINITY; WINDOW_WIDTH];
+
+        render_3d(
+            &mut framebuffer,
+            &mut depth_buffer,
+            &maze,
+            &player,
+            &textures(),
+            1,
+        );
+
+        assert_eq!(framebuffer.width, WINDOW_WIDTH);
+        assert_eq!(framebuffer.height, WINDOW_HEIGHT);
+        assert_eq!(framebuffer.buffer.len(), WINDOW_WIDTH * WINDOW_HEIGHT);
+    }
+
+    #[test]
+    fn a_ray_without_a_wall_still_covers_the_column() {
+        // Laberinto totalmente abierto: todos los rayos salen del
+        // mapa sin impactar, así que `cast_ray` devuelve `None`.
+        let maze: Maze = vec![vec![' '; 3]; 3];
+
+        let player = Player::new(Vec2::new(150.0, 150.0), 0.4);
+
+        let mut framebuffer = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        // Color centinela: si sobrevive, quedó fondo expuesto.
+        const SENTINEL: u32 = 0xFF00FF;
+
+        framebuffer.buffer.fill(SENTINEL);
+
+        let mut depth_buffer = vec![f32::INFINITY; WINDOW_WIDTH];
+
+        render_3d(
+            &mut framebuffer,
+            &mut depth_buffer,
+            &maze,
+            &player,
+            &textures(),
+            1,
+        );
+
+        let leftover = framebuffer
+            .buffer
+            .iter()
+            .filter(|pixel| **pixel == SENTINEL)
+            .count();
+
+        assert_eq!(leftover, 0, "{leftover} píxeles quedaron sin pintar");
+    }
+
+    #[test]
+    fn every_column_is_fully_painted_with_walls_present() {
+        let (maze, player) = crate::maze::load_maze("./levels/level_01.txt", BLOCK_SIZE);
+
+        let mut framebuffer = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        const SENTINEL: u32 = 0xFF00FF;
+
+        framebuffer.buffer.fill(SENTINEL);
+
+        let mut depth_buffer = vec![f32::INFINITY; WINDOW_WIDTH];
+
+        render_3d(
+            &mut framebuffer,
+            &mut depth_buffer,
+            &maze,
+            &player,
+            &textures(),
+            1,
+        );
+
+        assert_eq!(
+            framebuffer
+                .buffer
+                .iter()
+                .filter(|pixel| **pixel == SENTINEL)
+                .count(),
+            0,
+        );
+    }
+
+    #[test]
+    fn the_horizon_is_dark_rather_than_bright() {
+        let horizon = WINDOW_HEIGHT as f32 / 2.0;
+
+        let rows = build_plane_rows(WINDOW_HEIGHT, horizon, projection_distance());
+
+        // La fila singular usa el color oscuro reservado.
+        let horizon_luma =
+            ((HORIZON_COLOR >> 16) & 0xFF) + ((HORIZON_COLOR >> 8) & 0xFF) + (HORIZON_COLOR & 0xFF);
+
+        assert!(horizon_luma < 120, "el horizonte no es oscuro");
+
+        // Y las filas vecinas llegan ya con la luz mínima, así que el
+        // contraste junto al horizonte queda comprimido.
+        let near_horizon = &rows[WINDOW_HEIGHT / 2 + 2];
+
+        let far_from_horizon = &rows[WINDOW_HEIGHT - 1];
+
+        assert!(near_horizon.floor_light < far_from_horizon.floor_light);
+
+        // El techo siempre algo más apagado que el suelo.
+        assert!(far_from_horizon.ceiling_light < far_from_horizon.floor_light);
     }
 }

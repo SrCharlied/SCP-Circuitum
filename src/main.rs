@@ -55,6 +55,8 @@ fn main() {
         ],
         "./assets/textures/column_reinforced.png",
         "./assets/textures/goal_elevator.png",
+        "./assets/textures/floor_industrial.png",
+        "./assets/textures/ceiling_industrial.png",
     )
     .unwrap_or_else(|error| panic!("{error}"));
 
