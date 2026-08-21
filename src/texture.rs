@@ -1,5 +1,21 @@
 use image::ImageReader;
 
+/// Parte fraccionaria en `[0, 1)`, equivalente a `rem_euclid(1.0)`.
+///
+/// `rem_euclid` sobre `f32` son dos `fmod`, y en el muestreo de los
+/// planos se ejecuta por píxel: medido, era el coste dominante del
+/// suelo y el techo. `x - x.floor()` es una sola instrucción.
+///
+/// Para cualquier `x` finito, `x - floor(x)` y `x.rem_euclid(1.0)`
+/// hacen la misma resta contra el mismo entero, así que coinciden
+/// bit a bit. Incluido el caso límite en que un negativo diminuto
+/// redondea el resultado a `1.0`: ambos lo hacen, y el recorte del
+/// índice en `sample_planes` ya lo contemplaba.
+#[inline(always)]
+fn fract(value: f32) -> f32 {
+    value - value.floor()
+}
+
 pub struct Texture {
     width: usize,
     height: usize,
@@ -84,25 +100,17 @@ impl Texture {
         self.pixels[texture_y * self.width + texture_x]
     }
 
-    /// Muestrea con coordenadas normalizadas repetibles.
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Texel por índice lineal ya validado.
     ///
-    /// Envuelve ambos ejes con `rem_euclid`, así que acepta valores
-    /// mayores que 1 y negativos: es lo que permite teselar un plano
-    /// del mundo sin acotar las coordenadas en el llamador. El
-    /// filtrado es nearest-neighbour, para conservar el pixel art.
-    pub fn sample_wrapped(&self, texture_u: f32, texture_v: f32) -> u32 {
-        let normalized_u = texture_u.rem_euclid(1.0);
-
-        let normalized_v = texture_v.rem_euclid(1.0);
-
-        // `rem_euclid` sobre un valor no finito da NaN, y convertirlo
-        // a entero satura en 0. El `min` cubre además el caso límite
-        // en que el redondeo alcance el ancho exacto.
-        let texture_x = ((normalized_u * self.width as f32) as usize).min(self.width - 1);
-
-        let texture_y = ((normalized_v * self.height as f32) as usize).min(self.height - 1);
-
-        self.pixels[texture_y * self.width + texture_x]
+    /// Es privado al módulo a propósito: permite que `TextureSet`
+    /// reutilice un índice entre dos texturas sin exponer el vector
+    /// de píxeles fuera de aquí.
+    fn texel(&self, index: usize) -> u32 {
+        self.pixels[index]
     }
 }
 
@@ -168,6 +176,24 @@ impl TextureSet {
             .map(|path| Texture::from_file(path))
             .collect::<Result<Vec<_>, _>>()?;
 
+        let floor = Texture::from_file(floor_path)?;
+
+        let ceiling = Texture::from_file(ceiling_path)?;
+
+        // `sample_planes` reutiliza un solo índice para los dos
+        // planos, así que la invariante se valida al cargar en lugar
+        // de asumirse en silencio.
+        if floor.width() != ceiling.width() || floor.height() != ceiling.height() {
+            return Err(format!(
+                "El suelo '{floor_path}' ({}x{}) y el techo '{ceiling_path}' ({}x{}) \
+                 deben tener la misma resolución",
+                floor.width(),
+                floor.height(),
+                ceiling.width(),
+                ceiling.height(),
+            ));
+        }
+
         Ok(Self {
             walls_by_level,
 
@@ -175,18 +201,37 @@ impl TextureSet {
 
             goal: Some(Texture::from_file(goal_path)?),
 
-            floor: Texture::from_file(floor_path)?,
+            floor,
 
-            ceiling: Texture::from_file(ceiling_path)?,
+            ceiling,
         })
     }
 
-    pub fn floor(&self) -> &Texture {
-        &self.floor
-    }
+    /// Muestrea suelo y techo con las mismas coordenadas del mundo.
+    ///
+    /// Suelo y techo se dibujan en filas simétricas respecto al
+    /// horizonte, que comparten posición mundial. Normalizar aquí una
+    /// sola vez evita repetir dos `rem_euclid` y dos conversiones por
+    /// cada par de píxeles.
+    ///
+    /// Ambos planos tienen la misma resolución —validado al cargar—,
+    /// así que un único índice sirve para los dos.
+    pub fn sample_planes(&self, texture_u: f32, texture_v: f32) -> (u32, u32) {
+        let normalized_u = fract(texture_u);
 
-    pub fn ceiling(&self) -> &Texture {
-        &self.ceiling
+        let normalized_v = fract(texture_v);
+
+        let width = self.floor.width();
+
+        let height = self.floor.height();
+
+        let texture_x = ((normalized_u * width as f32) as usize).min(width - 1);
+
+        let texture_y = ((normalized_v * height as f32) as usize).min(height - 1);
+
+        let index = texture_y * width + texture_x;
+
+        (self.floor.texel(index), self.ceiling.texel(index))
     }
 
     pub fn for_cell(&self, cell: char, level_number: usize) -> Option<&Texture> {
@@ -260,48 +305,55 @@ mod tests {
 mod plane_texture_tests {
     use super::{Texture, TextureSet};
 
+    const WALL: &str = "./assets/textures/wall_industrial.png";
+    const COLUMN: &str = "./assets/textures/column_reinforced.png";
+    const GOAL: &str = "./assets/textures/goal_elevator.png";
     const FLOOR: &str = "./assets/textures/floor_industrial.png";
     const CEILING: &str = "./assets/textures/ceiling_industrial.png";
 
-    fn floor_texture() -> Texture {
-        Texture::from_file(FLOOR).expect("la textura de suelo debe cargar")
+    fn planes(floor: &str, ceiling: &str) -> Result<TextureSet, String> {
+        TextureSet::from_files(&[WALL], COLUMN, GOAL, floor, ceiling)
+    }
+
+    fn loaded() -> TextureSet {
+        planes(FLOOR, CEILING).expect("las texturas deben cargar")
     }
 
     #[test]
     fn wrapping_repeats_coordinates_above_one() {
-        let texture = floor_texture();
+        let textures = loaded();
 
         for (u, v) in [(0.0, 0.0), (0.25, 0.75), (0.5, 0.1), (0.99, 0.42)] {
-            let base = texture.sample_wrapped(u, v);
+            let base = textures.sample_planes(u, v);
 
-            // Sumar vueltas completas no cambia el píxel.
-            assert_eq!(texture.sample_wrapped(u + 1.0, v + 1.0), base);
-            assert_eq!(texture.sample_wrapped(u + 7.0, v + 3.0), base);
-            assert_eq!(texture.sample_wrapped(u + 128.0, v + 64.0), base);
+            // Sumar vueltas completas no cambia los píxeles.
+            assert_eq!(textures.sample_planes(u + 1.0, v + 1.0), base);
+            assert_eq!(textures.sample_planes(u + 7.0, v + 3.0), base);
+            assert_eq!(textures.sample_planes(u + 128.0, v + 64.0), base);
         }
     }
 
     #[test]
     fn wrapping_repeats_negative_coordinates() {
-        let texture = floor_texture();
+        let textures = loaded();
 
         for (u, v) in [(0.0, 0.0), (0.3, 0.6), (0.87, 0.12)] {
-            let base = texture.sample_wrapped(u, v);
+            let base = textures.sample_planes(u, v);
 
-            assert_eq!(texture.sample_wrapped(u - 1.0, v - 1.0), base);
-            assert_eq!(texture.sample_wrapped(u - 5.0, v - 9.0), base);
+            assert_eq!(textures.sample_planes(u - 1.0, v - 1.0), base);
+            assert_eq!(textures.sample_planes(u - 5.0, v - 9.0), base);
         }
 
         // Justo por debajo de cero cae al último texel, no al primero.
         assert_eq!(
-            texture.sample_wrapped(-0.001, -0.001),
-            texture.sample_wrapped(0.999, 0.999),
+            textures.sample_planes(-0.001, -0.001),
+            textures.sample_planes(0.999, 0.999),
         );
     }
 
     #[test]
     fn wrapping_never_leaves_the_texture() {
-        let texture = floor_texture();
+        let textures = loaded();
 
         // Valores extremos y no finitos no deben provocar pánico.
         for coordinate in [
@@ -314,77 +366,110 @@ mod plane_texture_tests {
             f32::NEG_INFINITY,
             f32::NAN,
         ] {
-            let _ = texture.sample_wrapped(coordinate, coordinate);
+            let _ = textures.sample_planes(coordinate, coordinate);
+        }
+    }
+
+    /// Colores esperados en coordenadas conocidas.
+    ///
+    /// Fija la apariencia: si el muestreo compartido cambiara de
+    /// texel respecto al original, estos valores se moverían.
+    #[test]
+    fn known_coordinates_keep_their_colours() {
+        let textures = loaded();
+
+        let floor = Texture::from_file(FLOOR).unwrap();
+
+        let ceiling = Texture::from_file(CEILING).unwrap();
+
+        for (u, v) in [
+            (0.0f32, 0.0f32),
+            (0.125, 0.375),
+            (0.5, 0.5),
+            (0.75, 0.25),
+            (0.99, 0.01),
+            (2.25, -3.75),
+            (-0.6, 1.4),
+        ] {
+            // Referencia calculada de forma independiente, igual que
+            // hacía el muestreo por textura separada.
+            let width = floor.width();
+            let height = floor.height();
+
+            let x = ((u.rem_euclid(1.0) * width as f32) as usize).min(width - 1);
+            let y = ((v.rem_euclid(1.0) * height as f32) as usize).min(height - 1);
+
+            let expected = (floor.sample_column(x, y), ceiling.sample_column(x, y));
+
+            assert_eq!(
+                textures.sample_planes(u, v),
+                expected,
+                "el muestreo compartido cambió el color en ({u}, {v})",
+            );
         }
     }
 
     #[test]
     fn the_texture_set_loads_floor_and_ceiling() {
-        let textures = TextureSet::from_files(
-            &["./assets/textures/wall_industrial.png"],
-            "./assets/textures/column_reinforced.png",
-            "./assets/textures/goal_elevator.png",
-            FLOOR,
-            CEILING,
-        )
-        .expect("las texturas deben cargar");
+        let textures = loaded();
 
-        // Son planos distintos entre sí y distintos de la pared.
-        assert!(!std::ptr::eq(textures.floor(), textures.ceiling()));
+        // Ambos planos existen y no son la misma imagen.
+        let mut differences = 0;
 
-        assert!(!std::ptr::eq(
-            textures.floor(),
-            textures.for_cell('|', 1).expect("debe existir pared"),
-        ));
+        for step in 0..64 {
+            let coordinate = step as f32 / 64.0;
 
-        // Y ambos se pueden muestrear.
-        let _ = textures.floor().sample_wrapped(0.5, 0.5);
-        let _ = textures.ceiling().sample_wrapped(0.5, 0.5);
+            let (floor_color, ceiling_color) = textures.sample_planes(coordinate, coordinate);
+
+            if floor_color != ceiling_color {
+                differences += 1;
+            }
+        }
+
+        assert!(differences > 0, "suelo y techo resultaron idénticos");
     }
 
     #[test]
     fn the_ceiling_is_darker_than_the_wall() {
-        let wall = Texture::from_file("./assets/textures/wall_industrial.png").unwrap();
+        let textures = loaded();
 
-        let ceiling = Texture::from_file(CEILING).unwrap();
+        let wall = Texture::from_file(WALL).unwrap();
 
-        fn average_luma(texture: &Texture) -> f32 {
-            let mut total = 0.0;
-            let mut count = 0.0;
+        let mut ceiling_total = 0.0;
+        let mut wall_total = 0.0;
 
-            for step in 0..64 {
-                for other in 0..64 {
-                    let u = step as f32 / 64.0;
-                    let v = other as f32 / 64.0;
-                    let color = texture.sample_wrapped(u, v);
-                    let red = ((color >> 16) & 0xFF) as f32;
-                    let green = ((color >> 8) & 0xFF) as f32;
-                    let blue = (color & 0xFF) as f32;
-                    total += (red + green + blue) / 3.0;
-                    count += 1.0;
+        for y in 0..64 {
+            for x in 0..64 {
+                let (_, ceiling_color) = textures.sample_planes(x as f32 / 64.0, y as f32 / 64.0);
+
+                let wall_color = wall.sample_column(x, y);
+
+                for color in [(ceiling_color, true), (wall_color, false)] {
+                    let luma = (((color.0 >> 16) & 0xFF)
+                        + ((color.0 >> 8) & 0xFF)
+                        + (color.0 & 0xFF)) as f32
+                        / 3.0;
+
+                    if color.1 {
+                        ceiling_total += luma;
+                    } else {
+                        wall_total += luma;
+                    }
                 }
             }
-
-            total / count
         }
 
         assert!(
-            average_luma(&ceiling) < average_luma(&wall),
+            ceiling_total < wall_total,
             "el techo debe ser más oscuro que la pared",
         );
     }
 
     #[test]
     fn a_missing_plane_texture_fails_with_a_clear_error() {
-        let error = TextureSet::from_files(
-            &["./assets/textures/wall_industrial.png"],
-            "./assets/textures/column_reinforced.png",
-            "./assets/textures/goal_elevator.png",
-            "./assets/textures/no_existe_suelo.png",
-            CEILING,
-        )
-        .err()
-        .expect("una textura de suelo ausente debe fallar");
+        let error = planes("./assets/textures/no_existe_suelo.png", CEILING)
+            .err()
+            .expect("una textura de suelo ausente debe fallar");
 
         assert!(
             error.contains("no_existe_suelo.png"),
@@ -395,16 +480,100 @@ mod plane_texture_tests {
             "error poco claro: {error}"
         );
 
-        let ceiling_error = TextureSet::from_files(
-            &["./assets/textures/wall_industrial.png"],
-            "./assets/textures/column_reinforced.png",
-            "./assets/textures/goal_elevator.png",
-            FLOOR,
-            "./assets/textures/no_existe_techo.png",
-        )
-        .err()
-        .expect("una textura de techo ausente debe fallar");
+        let ceiling_error = planes(FLOOR, "./assets/textures/no_existe_techo.png")
+            .err()
+            .expect("una textura de techo ausente debe fallar");
 
         assert!(ceiling_error.contains("no_existe_techo.png"));
+    }
+
+    #[test]
+    fn mismatched_plane_resolutions_fail_with_a_clear_error() {
+        // El sprite de SCP-173 es 320x320: sirve como plano de otra
+        // resolución para comprobar la validación.
+        let error = planes(FLOOR, "./assets/sprites/scp_173.png")
+            .err()
+            .expect("resoluciones distintas deben fallar");
+
+        assert!(
+            error.contains("misma resolución"),
+            "el error no explica la invariante: {error}",
+        );
+        assert!(
+            error.contains("64x64"),
+            "el error no indica los tamaños: {error}"
+        );
+        assert!(
+            error.contains("320x320"),
+            "el error no indica los tamaños: {error}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod fract_tests {
+    use super::fract;
+
+    #[test]
+    fn fract_matches_rem_euclid_over_a_wide_range() {
+        let mut value = -2_000.0f32;
+
+        while value < 2_000.0 {
+            assert_eq!(fract(value), value.rem_euclid(1.0), "difieren en {value}",);
+
+            value += 0.37;
+        }
+    }
+
+    #[test]
+    fn fract_matches_rem_euclid_on_the_edges() {
+        for value in [
+            0.0f32,
+            -0.0,
+            1.0,
+            -1.0,
+            0.999_999_9,
+            -0.000_000_1,
+            -1e-30,
+            -1e-7,
+            1e-7,
+            123.456,
+            -123.456,
+        ] {
+            assert_eq!(fract(value), value.rem_euclid(1.0), "difieren en {value}");
+        }
+    }
+
+    /// El caso límite: un negativo diminuto hace que la parte
+    /// fraccionaria redondee a `1.0`. `rem_euclid` se comporta igual,
+    /// y el recorte del índice lo absorbe sin salirse de la textura.
+    #[test]
+    fn the_rounding_edge_behaves_like_rem_euclid_and_stays_in_range() {
+        for value in [
+            -1e-30f32,
+            -1e-20,
+            -1e-10,
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+            1e30,
+            -1e30,
+        ] {
+            let fraction = fract(value);
+
+            assert_eq!(fraction, value.rem_euclid(1.0), "difieren en {value}");
+
+            assert!(
+                (0.0..=1.0).contains(&fraction),
+                "fract({value}) salió del rango: {fraction}",
+            );
+
+            // Lo que de verdad importa: el índice nunca sale de la
+            // textura, gracias al recorte de `sample_planes`.
+            let width = 64usize;
+
+            let index = ((fraction * width as f32) as usize).min(width - 1);
+
+            assert!(index < width);
+        }
     }
 }

@@ -24,7 +24,7 @@ use crate::maze::load_maze;
 use crate::mouse_capture::{MouseCapture, should_capture_cursor};
 use crate::player::{MouseLook, PlayerMotion, process_events};
 use crate::renderer::{
-    WorldSprite, draw_text, render_3d, render_level_selection, render_level_success,
+    PlaneTable, WorldSprite, draw_text, render_3d, render_level_selection, render_level_success,
     render_level_transition, render_minimap, render_pause_menu, render_sprite, render_stamina_bar,
     render_victory_screen, render_welcome_screen,
 };
@@ -63,6 +63,9 @@ fn main() {
     let mut framebuffer = Framebuffer::new(framebuffer_width, framebuffer_height);
     framebuffer.set_background_color(0x333355);
     let mut depth_buffer = vec![f32::INFINITY; framebuffer_width];
+
+    // Se reconstruye solo si cambian las dimensiones, no por frame.
+    let mut plane_table = PlaneTable::new();
 
     let scp_173_texture = SpriteTexture::from_file("./assets/sprites/scp_173.png")
         .unwrap_or_else(|error| panic!("{error}"));
@@ -468,6 +471,7 @@ fn main() {
 
                 render_3d(
                     &mut framebuffer,
+                    &mut plane_table,
                     &mut depth_buffer,
                     &maze,
                     &player,

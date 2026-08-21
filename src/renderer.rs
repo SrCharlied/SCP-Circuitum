@@ -174,8 +174,59 @@ fn wall_light_intensity(distance: f32) -> u32 {
     (light * LIGHT_SCALE as f32) as u32
 }
 
+/// Tabla de filas reutilizada entre frames.
+///
+/// Las filas solo dependen de las dimensiones del framebuffer, del
+/// FOV y de `BLOCK_SIZE`, así que reconstruirlas en cada frame era
+/// puro desperdicio. La tabla vive en el bucle principal —no en
+/// estado global— y se rehace únicamente si cambian las dimensiones.
+pub struct PlaneTable {
+    rows: Vec<PlaneRow>,
+    horizon_row: usize,
+    width: usize,
+    height: usize,
+}
+
+impl Default for PlaneTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PlaneTable {
+    pub fn new() -> Self {
+        Self {
+            rows: Vec::new(),
+            horizon_row: 0,
+            width: 0,
+            height: 0,
+        }
+    }
+
+    fn ensure(&mut self, width: usize, height: usize, projection_distance: f32) {
+        if self.width == width && self.height == height && self.rows.len() == height {
+            return;
+        }
+
+        let horizon = height as f32 / 2.0;
+
+        self.rows = build_plane_rows(height, horizon, projection_distance);
+
+        self.horizon_row = self
+            .rows
+            .iter()
+            .position(|row| row.is_horizon)
+            .unwrap_or(height / 2);
+
+        self.width = width;
+
+        self.height = height;
+    }
+}
+
 pub fn render_3d(
     framebuffer: &mut Framebuffer,
+    plane_table: &mut PlaneTable,
     depth_buffer: &mut [f32],
     maze: &Maze,
     player: &Player,
@@ -200,18 +251,14 @@ pub fn render_3d(
 
     let delta_beta = FOV / (width - 1) as f32;
 
-    // Distancia e iluminación por fila: una sola vez por frame, no
-    // por columna y mucho menos por píxel.
-    let plane_rows = build_plane_rows(height, horizon, proyeccion_distancia);
+    // Distancia e iluminación por fila. La tabla se reconstruye solo
+    // si cambian las dimensiones, así que en régimen no hay ninguna
+    // asignación por frame.
+    plane_table.ensure(width, height, proyeccion_distancia);
 
-    let horizon_row = plane_rows
-        .iter()
-        .position(|row| row.is_horizon)
-        .unwrap_or(height / 2);
+    let plane_rows = &plane_table.rows;
 
-    let floor_texture = textures.floor();
-
-    let ceiling_texture = textures.ceiling();
+    let horizon_row = plane_table.horizon_row;
 
     let inverse_block_size = 1.0 / BLOCK_SIZE as f32;
 
@@ -317,49 +364,66 @@ pub fn render_3d(
             None => (horizon_row, horizon_row + 1),
         };
 
-        // ----- Techo -----
-        for y in 0..ceiling_end.min(height) {
-            let row = &plane_rows[y];
+        // ----- Planos, recorridos por pares simétricos -----
+        //
+        // El horizonte está exactamente en `height / 2`, así que la
+        // fila de techo `y` y la de suelo `height - 1 - y` distan lo
+        // mismo de él: comparten distancia, posición mundial y UV.
+        // Se calculan una vez y se escriben los dos píxeles.
+        let ceiling_limit = ceiling_end.min(height);
+
+        let floor_limit = floor_start.min(height);
+
+        for ceiling_y in 0..height.div_ceil(2) {
+            let floor_y = height - 1 - ceiling_y;
+
+            let draw_ceiling = ceiling_y < ceiling_limit;
+
+            let draw_floor = floor_y >= floor_limit;
+
+            // Ambas condiciones dejan de cumplirse al acercarse al
+            // horizonte y ya no vuelven: aquí no queda nada por
+            // pintar en esta columna.
+            if !draw_ceiling && !draw_floor {
+                break;
+            }
+
+            let row = &plane_rows[ceiling_y];
 
             if row.is_horizon {
-                buffer[y * width + i] = HORIZON_COLOR;
+                if draw_ceiling {
+                    buffer[ceiling_y * width + i] = HORIZON_COLOR;
+                }
+
+                if draw_floor {
+                    buffer[floor_y * width + i] = HORIZON_COLOR;
+                }
 
                 continue;
             }
 
+            // Cálculo compartido por el par: una posición mundial,
+            // un normalizado de UV y un solo índice de texel.
             let world_x = player.pos.x + direction_x * row.distance;
 
             let world_y = player.pos.y + direction_y * row.distance;
 
-            let texture_color = ceiling_texture
-                .sample_wrapped(world_x * inverse_block_size, world_y * inverse_block_size);
+            let (floor_color, ceiling_color) =
+                textures.sample_planes(world_x * inverse_block_size, world_y * inverse_block_size);
 
-            buffer[y * width + i] = scale_color_intensity(texture_color, row.ceiling_light);
+            if draw_ceiling {
+                buffer[ceiling_y * width + i] =
+                    scale_color_intensity(ceiling_color, row.ceiling_light);
+            }
+
+            if draw_floor {
+                buffer[floor_y * width + i] = scale_color_intensity(floor_color, row.floor_light);
+            }
         }
 
         // ----- Fila del horizonte, si la pared no la tapa -----
         if wall_span.is_none() && horizon_row < height {
             buffer[horizon_row * width + i] = HORIZON_COLOR;
-        }
-
-        // ----- Suelo -----
-        for y in floor_start.min(height)..height {
-            let row = &plane_rows[y];
-
-            if row.is_horizon {
-                buffer[y * width + i] = HORIZON_COLOR;
-
-                continue;
-            }
-
-            let world_x = player.pos.x + direction_x * row.distance;
-
-            let world_y = player.pos.y + direction_y * row.distance;
-
-            let texture_color = floor_texture
-                .sample_wrapped(world_x * inverse_block_size, world_y * inverse_block_size);
-
-            buffer[y * width + i] = scale_color_intensity(texture_color, row.floor_light);
         }
     }
 }
@@ -2204,7 +2268,7 @@ mod terminal_screen_tests {
 
 #[cfg(test)]
 mod plane_casting_tests {
-    use super::{HORIZON_COLOR, build_plane_rows, render_3d};
+    use super::{HORIZON_COLOR, PlaneTable, build_plane_rows, render_3d};
     use crate::framebuffer::Framebuffer;
     use crate::maze::Maze;
     use crate::player::Player;
@@ -2304,8 +2368,11 @@ mod plane_casting_tests {
 
         let mut depth_buffer = vec![f32::INFINITY; WINDOW_WIDTH];
 
+        let mut plane_table = PlaneTable::new();
+
         render_3d(
             &mut framebuffer,
+            &mut plane_table,
             &mut depth_buffer,
             &maze,
             &player,
@@ -2335,8 +2402,11 @@ mod plane_casting_tests {
 
         let mut depth_buffer = vec![f32::INFINITY; WINDOW_WIDTH];
 
+        let mut plane_table = PlaneTable::new();
+
         render_3d(
             &mut framebuffer,
+            &mut plane_table,
             &mut depth_buffer,
             &maze,
             &player,
@@ -2365,8 +2435,11 @@ mod plane_casting_tests {
 
         let mut depth_buffer = vec![f32::INFINITY; WINDOW_WIDTH];
 
+        let mut plane_table = PlaneTable::new();
+
         render_3d(
             &mut framebuffer,
+            &mut plane_table,
             &mut depth_buffer,
             &maze,
             &player,
