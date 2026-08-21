@@ -40,6 +40,17 @@ const CRACK_PATH: &str = "./assets/audio/crack.ogg";
 /// Por encima de los pasos: es el desenlace del encuentro.
 const CRACK_VOLUME: f32 = 0.75;
 
+/// Golpe corto al entrar en un encuentro.
+const COMBAT_STING_PATH: &str = "./assets/audio/combat.ogg";
+
+const COMBAT_STING_VOLUME: f32 = 0.70;
+
+/// Música que sustituye a la ambiental mientras dura el encuentro.
+const FIGHT_MUSIC_PATH: &str = "./assets/audio/fight.ogg";
+
+/// Por debajo del sting y del impacto: es un fondo, no un golpe.
+const FIGHT_MUSIC_VOLUME: f32 = 0.35;
+
 /// Lee un efecto del disco una sola vez, al arrancar.
 ///
 /// Si falta, el juego continúa sin él: devuelve `None` junto al
@@ -93,7 +104,6 @@ fn music_belongs_to(state: GameState) -> bool {
             | GameState::Paused
             | GameState::LevelTransition
             | GameState::LevelSuccess
-            | GameState::Encounter
     )
 }
 
@@ -111,6 +121,40 @@ pub fn ambient_music_action(state: GameState, already_playing: bool) -> AmbientM
 
         _ => AmbientMusicAction::Leave,
     }
+}
+
+/// Qué debe ocurrir con la música de combate en el frame actual.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FightMusicAction {
+    Start,
+    Stop,
+    Leave,
+}
+
+/// La música de combate pertenece al encuentro y solo a él.
+///
+/// Es el reflejo de `ambient_music_action`: donde una arranca la otra
+/// calla, así que nunca suenan las dos a la vez.
+pub fn fight_music_action(state: GameState, already_playing: bool) -> FightMusicAction {
+    match (state == GameState::Encounter, already_playing) {
+        (true, false) => FightMusicAction::Start,
+
+        (false, true) => FightMusicAction::Stop,
+
+        _ => FightMusicAction::Leave,
+    }
+}
+
+/// Si este frame entra en un encuentro.
+///
+/// Compara el estado anterior con el actual, así que suena una sola
+/// vez por encuentro sin importar cómo se abrió: por proximidad o
+/// con F6. Volver a entrar más tarde vuelve a dispararlo.
+pub fn should_play_combat_sting(
+    previous_state: Option<GameState>,
+    current_state: GameState,
+) -> bool {
+    current_state == GameState::Encounter && previous_state != Some(GameState::Encounter)
 }
 
 /// Cada cuánto suena un paso según cómo se mueva el jugador.
@@ -206,6 +250,25 @@ pub struct AudioManager {
     crack_player: Option<Player>,
 
     crack_disabled: bool,
+
+    /// Música del encuentro. Se abre del disco en cada encuentro,
+    /// igual que la ambiental.
+    fight_music: Option<Player>,
+
+    fight_music_disabled: bool,
+
+    /// El sting es corto, así que vive en memoria como los demás
+    /// efectos.
+    combat_sting_sound: Option<Arc<[u8]>>,
+
+    combat_sting_player: Option<Player>,
+
+    combat_sting_disabled: bool,
+
+    /// Estado del frame anterior. Es lo que permite detectar la
+    /// entrada al encuentro sin que `main` tenga que avisar desde
+    /// los dos sitios que pueden abrirlo.
+    previous_state: Option<GameState>,
 }
 
 impl AudioManager {
@@ -224,6 +287,9 @@ impl AudioManager {
 
         let (crack_sound, crack_disabled) = load_effect(CRACK_PATH, "el impacto");
 
+        let (combat_sting_sound, combat_sting_disabled) =
+            load_effect(COMBAT_STING_PATH, "el inicio del encuentro");
+
         Ok(Self {
             device_sink,
             ambient_music: None,
@@ -235,6 +301,12 @@ impl AudioManager {
             crack_sound,
             crack_player: None,
             crack_disabled,
+            fight_music: None,
+            fight_music_disabled: false,
+            combat_sting_sound,
+            combat_sting_player: None,
+            combat_sting_disabled,
+            previous_state: None,
         })
     }
 
@@ -277,16 +349,104 @@ impl AudioManager {
         self.ambient_music = None;
     }
 
+    pub fn is_fight_music_playing(&self) -> bool {
+        self.fight_music.is_some()
+    }
+
+    /// Arranca la música del encuentro en loop.
+    ///
+    /// Sigue el mismo patrón que la ambiental: se abre del disco al
+    /// empezar cada encuentro y el loop lo resuelve el decodificador.
+    pub fn play_fight_music(&mut self) -> Result<(), String> {
+        if self.is_fight_music_playing() {
+            return Ok(());
+        }
+
+        let file = File::open(FIGHT_MUSIC_PATH)
+            .map_err(|error| format!("no se pudo abrir '{FIGHT_MUSIC_PATH}': {error}"))?;
+
+        let looped_music = Decoder::new_looped(BufReader::new(file))
+            .map_err(|error| format!("no se pudo decodificar '{FIGHT_MUSIC_PATH}': {error}"))?;
+
+        // Player nuevo sobre el mixer que ya existe: ni otro
+        // dispositivo, ni un `append` que pueda bloquear el hilo.
+        let player = Player::connect_new(self.device_sink.mixer());
+
+        player.set_volume(FIGHT_MUSIC_VOLUME);
+
+        player.append(looped_music);
+
+        self.fight_music = Some(player);
+
+        Ok(())
+    }
+
+    pub fn stop_fight_music(&mut self) {
+        self.fight_music = None;
+    }
+
+    /// Reproduce el golpe de entrada al encuentro.
+    ///
+    /// Devuelve `true` si llegó a sonar. Puede solaparse con la
+    /// música de combate: son dos `Player` independientes.
+    fn play_combat_sting(&mut self) -> bool {
+        if self.combat_sting_disabled {
+            return false;
+        }
+
+        let Some(combat_sting_sound) = self.combat_sting_sound.as_ref() else {
+            return false;
+        };
+
+        // Solo hay un sting: si quedaba uno sonando, se descarta.
+        self.combat_sting_player = None;
+
+        let sting = match Decoder::new(Cursor::new(Arc::clone(combat_sting_sound))) {
+            Ok(decoder) => decoder,
+
+            Err(error) => {
+                eprintln!(
+                    "Audio: no se pudo decodificar '{COMBAT_STING_PATH}': {error}. \
+                     La partida continúa sin el inicio del encuentro."
+                );
+
+                self.combat_sting_disabled = true;
+
+                return false;
+            }
+        };
+
+        let player = Player::connect_new(self.device_sink.mixer());
+
+        player.set_volume(COMBAT_STING_VOLUME);
+
+        player.append(sting);
+
+        self.combat_sting_player = Some(player);
+
+        true
+    }
+
+    fn stop_combat_sting(&mut self) {
+        self.combat_sting_player = None;
+    }
+
     /// Único punto desde el que el bucle principal toca el audio.
     /// Llamarlo cada frame es seguro: la acción se deriva del estado.
     pub fn update_for_state(&mut self, state: GameState) {
+        // La entrada al encuentro se detecta aquí comparando con el
+        // frame anterior, así que `main` no tiene que avisar desde
+        // los dos sitios que pueden abrirlo.
+        let play_sting = should_play_combat_sting(self.previous_state, state);
+
+        // ----- Música ambiental -----
         match ambient_music_action(state, self.is_ambient_music_playing()) {
             AmbientMusicAction::Start => {
-                if self.ambient_music_disabled {
-                    return;
-                }
-
-                if let Err(error) = self.play_ambient_music() {
+                // Una pista desactivada no puede cortar el resto de
+                // la función: las demás siguen decidiéndose.
+                if !self.ambient_music_disabled
+                    && let Err(error) = self.play_ambient_music()
+                {
                     eprintln!("Audio: {error}. La partida continúa sin música.");
 
                     self.ambient_music_disabled = true;
@@ -297,6 +457,37 @@ impl AudioManager {
 
             AmbientMusicAction::Leave => {}
         }
+
+        // ----- Música de combate -----
+        match fight_music_action(state, self.is_fight_music_playing()) {
+            FightMusicAction::Start => {
+                if !self.fight_music_disabled
+                    && let Err(error) = self.play_fight_music()
+                {
+                    eprintln!("Audio: {error}. El encuentro continúa sin música.");
+
+                    self.fight_music_disabled = true;
+                }
+            }
+
+            FightMusicAction::Stop => self.stop_fight_music(),
+
+            FightMusicAction::Leave => {}
+        }
+
+        // ----- Golpe de entrada -----
+        if play_sting {
+            self.play_combat_sting();
+        }
+
+        // Fuera del encuentro no debe quedar sonando.
+        if state != GameState::Encounter {
+            self.stop_combat_sting();
+        }
+
+        // Siempre al final: ningún camino puede saltárselo, o la
+        // detección de entrada dejaría de funcionar.
+        self.previous_state = Some(state);
     }
 
     /// Reproduce un paso. Cada uno usa su propio `Player`, que es la
@@ -488,6 +679,20 @@ mod tests {
 
         // Y los pasos tampoco: solo suenan en Playing.
         assert!(!music_belongs_to(GameState::Defeat));
+    }
+
+    /// El encuentro tiene su propia música: la ambiental se retira.
+    #[test]
+    fn encounter_stops_the_ambient_music() {
+        assert_eq!(
+            ambient_music_action(GameState::Encounter, true),
+            AmbientMusicAction::Stop,
+        );
+
+        assert_eq!(
+            ambient_music_action(GameState::Encounter, false),
+            AmbientMusicAction::Leave,
+        );
     }
 
     #[test]
@@ -866,5 +1071,283 @@ mod crack_tests {
 
         // Cerrar el encuentro no vuelve a sonar.
         assert!(!should_play_crack(update));
+    }
+}
+
+#[cfg(test)]
+mod combat_audio_tests {
+    use super::{
+        AmbientMusicAction, COMBAT_STING_PATH, FIGHT_MUSIC_PATH, FightMusicAction,
+        ambient_music_action, fight_music_action, music_belongs_to, should_play_combat_sting,
+    };
+    use crate::game::GameState;
+
+    /// Todos los estados del juego, para barrer cada regla.
+    const EVERY_STATE: [GameState; 9] = [
+        GameState::Welcome,
+        GameState::LevelSelection,
+        GameState::Playing,
+        GameState::Paused,
+        GameState::LevelTransition,
+        GameState::LevelSuccess,
+        GameState::Defeat,
+        GameState::Encounter,
+        GameState::Victory,
+    ];
+
+    // ----- Música de combate -----
+
+    #[test]
+    fn the_fight_music_starts_when_the_encounter_opens() {
+        assert_eq!(
+            fight_music_action(GameState::Encounter, false),
+            FightMusicAction::Start,
+        );
+    }
+
+    #[test]
+    fn the_fight_music_does_not_restart_every_frame() {
+        assert_eq!(
+            fight_music_action(GameState::Encounter, true),
+            FightMusicAction::Leave,
+        );
+    }
+
+    #[test]
+    fn the_fight_music_stops_outside_the_encounter() {
+        for state in EVERY_STATE {
+            if state == GameState::Encounter {
+                continue;
+            }
+
+            assert_eq!(
+                fight_music_action(state, true),
+                FightMusicAction::Stop,
+                "la música de combate debe parar en {state:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_fight_music_stops_on_the_key_exits() {
+        // Cerrar un encuentro con F6 vuelve a Playing.
+        assert_eq!(
+            fight_music_action(GameState::Playing, true),
+            FightMusicAction::Stop,
+        );
+
+        // Y morir lleva a Defeat.
+        assert_eq!(
+            fight_music_action(GameState::Defeat, true),
+            FightMusicAction::Stop,
+        );
+    }
+
+    #[test]
+    fn the_fight_music_is_not_stopped_over_and_over() {
+        for state in EVERY_STATE {
+            if state == GameState::Encounter {
+                continue;
+            }
+
+            assert_eq!(
+                fight_music_action(state, false),
+                FightMusicAction::Leave,
+                "no había nada que detener en {state:?}",
+            );
+        }
+    }
+
+    // ----- Sting de entrada -----
+
+    #[test]
+    fn the_sting_fires_when_entering_the_encounter() {
+        assert!(should_play_combat_sting(
+            Some(GameState::Playing),
+            GameState::Encounter
+        ));
+
+        assert!(should_play_combat_sting(
+            Some(GameState::Paused),
+            GameState::Encounter
+        ));
+
+        assert!(should_play_combat_sting(
+            Some(GameState::Defeat),
+            GameState::Encounter
+        ));
+    }
+
+    #[test]
+    fn the_sting_fires_without_a_previous_state() {
+        assert!(should_play_combat_sting(None, GameState::Encounter));
+    }
+
+    #[test]
+    fn the_sting_does_not_repeat_while_the_encounter_lasts() {
+        assert!(!should_play_combat_sting(
+            Some(GameState::Encounter),
+            GameState::Encounter
+        ));
+    }
+
+    #[test]
+    fn the_sting_does_not_fire_on_the_way_out() {
+        for state in EVERY_STATE {
+            if state == GameState::Encounter {
+                continue;
+            }
+
+            assert!(
+                !should_play_combat_sting(Some(GameState::Encounter), state),
+                "el sting sonó al salir hacia {state:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_sting_never_fires_outside_the_encounter() {
+        for previous in EVERY_STATE {
+            for current in EVERY_STATE {
+                if current == GameState::Encounter {
+                    continue;
+                }
+
+                assert!(
+                    !should_play_combat_sting(Some(previous), current),
+                    "el sting sonó en {previous:?} -> {current:?}",
+                );
+            }
+        }
+
+        assert!(!should_play_combat_sting(None, GameState::Welcome));
+    }
+
+    #[test]
+    fn the_sting_fires_again_after_leaving_and_returning() {
+        // Se entra, se cierra con F6 y se vuelve a entrar.
+        let sequence = [
+            (None, GameState::Playing, false),
+            (Some(GameState::Playing), GameState::Encounter, true),
+            (Some(GameState::Encounter), GameState::Encounter, false),
+            (Some(GameState::Encounter), GameState::Playing, false),
+            (Some(GameState::Playing), GameState::Encounter, true),
+        ];
+
+        for (previous, current, expected) in sequence {
+            assert_eq!(
+                should_play_combat_sting(previous, current),
+                expected,
+                "falló la transición {previous:?} -> {current:?}",
+            );
+        }
+    }
+
+    // ----- Reparto entre pistas -----
+
+    #[test]
+    fn each_state_belongs_to_at_most_one_track() {
+        for state in EVERY_STATE {
+            let ambient = music_belongs_to(state);
+
+            let fight = fight_music_action(state, false) == FightMusicAction::Start;
+
+            assert!(
+                !(ambient && fight),
+                "{state:?} reclama las dos pistas a la vez",
+            );
+        }
+    }
+
+    #[test]
+    fn playing_belongs_only_to_the_ambient_track() {
+        assert!(music_belongs_to(GameState::Playing));
+
+        assert_eq!(
+            fight_music_action(GameState::Playing, false),
+            FightMusicAction::Leave,
+        );
+    }
+
+    #[test]
+    fn the_encounter_belongs_only_to_the_fight_track() {
+        assert!(!music_belongs_to(GameState::Encounter));
+
+        assert_eq!(
+            fight_music_action(GameState::Encounter, false),
+            FightMusicAction::Start,
+        );
+    }
+
+    #[test]
+    fn defeat_belongs_to_no_track_at_all() {
+        assert!(!music_belongs_to(GameState::Defeat));
+
+        assert_eq!(
+            ambient_music_action(GameState::Defeat, true),
+            AmbientMusicAction::Stop,
+        );
+
+        assert_eq!(
+            fight_music_action(GameState::Defeat, true),
+            FightMusicAction::Stop,
+        );
+    }
+
+    // ----- Assets -----
+
+    #[test]
+    fn the_combat_sting_asset_decodes_from_memory() {
+        use rodio::Source;
+
+        let bytes = std::fs::read(COMBAT_STING_PATH).expect("el sting debe existir");
+
+        assert!(!bytes.is_empty());
+
+        assert_eq!(&bytes[..4], b"OggS");
+
+        let decoder = rodio::Decoder::new(std::io::Cursor::new(bytes))
+            .expect("rodio debe poder decodificar el sting");
+
+        let channels = decoder.channels().get();
+
+        let sample_rate = decoder.sample_rate().get();
+
+        let samples = decoder.count();
+
+        assert!(samples > 0, "el sting no produjo muestras");
+
+        println!(
+            "COMBAT canales={channels} sample_rate={sample_rate} muestras={samples} segundos={:.3}",
+            samples as f64 / (sample_rate as f64 * channels as f64),
+        );
+    }
+
+    #[test]
+    fn the_fight_music_asset_opens_and_loops() {
+        use std::fs::File;
+        use std::io::BufReader;
+
+        let file = File::open(FIGHT_MUSIC_PATH).expect("la música de combate debe existir");
+
+        assert!(file.metadata().unwrap().len() > 0);
+
+        // Se abre igual que en producción: en loop y desde disco.
+        let looped = rodio::Decoder::new_looped(BufReader::new(file))
+            .expect("rodio debe poder decodificar la música de combate");
+
+        drop(looped);
+
+        // Y sus cabeceras son las de un OGG.
+        let mut header = [0u8; 4];
+
+        use std::io::Read;
+
+        File::open(FIGHT_MUSIC_PATH)
+            .unwrap()
+            .read_exact(&mut header)
+            .unwrap();
+
+        assert_eq!(&header, b"OggS");
     }
 }
