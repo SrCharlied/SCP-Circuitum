@@ -42,6 +42,11 @@ pub enum EncounterPhase {
 
     /// Responde la entidad.
     EnemyResolution,
+
+    /// Instante del impacto. Deja el desenlace en pantalla antes de
+    /// cerrar el encuentro, y marca el punto donde más adelante irá
+    /// el sonido.
+    DeathBeat,
 }
 
 impl EncounterPhase {
@@ -56,6 +61,8 @@ impl EncounterPhase {
             Self::PlayerResolution | Self::ForcedSequence => "RESULTADO",
 
             Self::EnemyResolution => "ACCIÓN ENEMIGA",
+
+            Self::DeathBeat => "IMPACTO",
         }
     }
 }
@@ -113,6 +120,72 @@ pub struct EncounterDefinition {
 
     /// Texto que queda visible al morir.
     pub death_text: &'static str,
+}
+
+impl EncounterDefinition {
+    /// Comprueba que la definición sea jugable de principio a fin.
+    ///
+    /// Las definiciones son datos estáticos escritos por el
+    /// programador: un fallo aquí es un error de programación, no una
+    /// situación que el jugador pueda provocar. Por eso conviene
+    /// detectarlo al arrancar y con un mensaje concreto, en lugar de
+    /// dejar que aparezca un panel vacío a mitad de partida.
+    pub fn validate(&self) -> Result<(), String> {
+        let name = self.entity_name;
+
+        if self.nodes.is_empty() {
+            return Err(format!("el encuentro '{name}' no define ningún nodo"));
+        }
+
+        if self.start_node >= self.nodes.len() {
+            return Err(format!(
+                "el encuentro '{name}' arranca en el nodo {} y solo hay {}",
+                self.start_node,
+                self.nodes.len(),
+            ));
+        }
+
+        // Toda acción que se le ofrezca al jugador necesita su texto
+        // de resultado, o el turno se resolvería en blanco.
+        for node in self.nodes {
+            for choice in node.choices {
+                if let Some(action) = choice.action
+                    && !self.outcomes.iter().any(|outcome| outcome.action == action)
+                {
+                    return Err(format!(
+                        "el encuentro '{name}' ofrece '{}' pero no define el resultado de {action:?}",
+                        choice.label,
+                    ));
+                }
+            }
+        }
+
+        if self.forced_steps.is_empty() {
+            return Err(format!(
+                "el encuentro '{name}' no define la secuencia forzada",
+            ));
+        }
+
+        if self.flee_response.action != EnemyAction::LethalAttack {
+            return Err(format!(
+                "la respuesta a huir de '{name}' debe ser un ataque letal",
+            ));
+        }
+
+        if self.forced_response.action != EnemyAction::LethalAttack {
+            return Err(format!(
+                "la respuesta tras el parpadeo de '{name}' debe ser un ataque letal",
+            ));
+        }
+
+        if self.death_text.trim().is_empty() {
+            return Err(format!(
+                "el encuentro '{name}' no define el texto de muerte",
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 /// Marcador sustituido por el daño en el texto de ataque.
@@ -371,16 +444,21 @@ pub struct EncounterSession {
 }
 
 impl EncounterSession {
+    /// # Pánico
+    ///
+    /// Si la definición no supera [`EncounterDefinition::validate`].
+    /// Es un fallo del contenido estático, así que interrumpir el
+    /// arranque con un mensaje claro es preferible a arrastrar el
+    /// problema hasta la partida.
     pub fn new(definition: EncounterDefinition) -> Self {
-        let node_index = definition
-            .start_node
-            .min(definition.nodes.len().saturating_sub(1));
+        if let Err(error) = definition.validate() {
+            panic!("Definición de encuentro inválida: {error}");
+        }
 
-        let current_text = definition
-            .nodes
-            .get(node_index)
-            .map(|node| node.text.to_string())
-            .unwrap_or_default();
+        // Validado justo arriba: el nodo inicial existe.
+        let node_index = definition.start_node;
+
+        let current_text = definition.nodes[node_index].text.to_string();
 
         Self {
             definition,
@@ -468,11 +546,19 @@ impl EncounterSession {
     /// cierre provisional con F6 no puede cancelarla.
     pub fn is_lethal_locked(&self) -> bool {
         match self.phase {
-            EncounterPhase::ForcedSequence => true,
+            EncounterPhase::ForcedSequence | EncounterPhase::DeathBeat => true,
 
             EncounterPhase::EnemyResolution => self.enemy_action == Some(EnemyAction::LethalAttack),
 
-            _ => false,
+            // El desenlace ya está comprometido antes de verse: tras
+            // resolver una huida, o la acción que agota los turnos
+            // normales, la única continuación posible es letal.
+            EncounterPhase::PlayerResolution => {
+                self.last_action == Some(PlayerAction::Flee)
+                    || self.turn_count > self.definition.enemy_turns.len()
+            }
+
+            EncounterPhase::PlayerChoice => false,
         }
     }
 
@@ -683,9 +769,15 @@ impl EncounterSession {
 
             EncounterPhase::EnemyResolution => {
                 if self.enemy_action == Some(EnemyAction::LethalAttack) {
+                    // El impacto se muestra antes de cerrar: la
+                    // muerte se reporta en la confirmación siguiente.
+                    self.phase = EncounterPhase::DeathBeat;
+
                     self.current_text = self.definition.death_text.to_string();
 
-                    return EncounterUpdate::PlayerDeath;
+                    self.selected_index = 0;
+
+                    return EncounterUpdate::PhaseAdvanced(self.phase);
                 }
 
                 self.phase = EncounterPhase::PlayerChoice;
@@ -698,6 +790,11 @@ impl EncounterSession {
                 // jugador elija su siguiente acción.
                 EncounterUpdate::PhaseAdvanced(self.phase)
             }
+
+            // El golpe ya está en pantalla: confirmarlo cierra el
+            // encuentro. La fase no cambia, así que "CRACK." sigue
+            // visible mientras el bucle principal pasa a la derrota.
+            EncounterPhase::DeathBeat => EncounterUpdate::PlayerDeath,
         }
     }
 }
@@ -1606,9 +1703,19 @@ mod lethal_tests {
 
         confirm_once(&mut session);
 
+        // Confirmar el ataque deja el impacto en pantalla; todavia no
+        // reporta la muerte.
         let update = confirm_once(&mut session);
 
-        assert_eq!(update, EncounterUpdate::PlayerDeath);
+        assert_eq!(
+            update,
+            EncounterUpdate::PhaseAdvanced(EncounterPhase::DeathBeat),
+        );
+
+        assert_eq!(session.current_text(), "CRACK.");
+
+        // Es la confirmacion siguiente la que cierra el encuentro.
+        assert_eq!(confirm_once(&mut session), EncounterUpdate::PlayerDeath);
 
         assert_eq!(session.current_text(), "CRACK.");
     }
@@ -1744,12 +1851,16 @@ mod lethal_tests {
             "Durante un instante, SCP-173 desaparece de tu vista.",
         );
 
-        // Y confirmarlo mata al sujeto.
-        let update = confirm_once(&mut session);
-
-        assert_eq!(update, EncounterUpdate::PlayerDeath);
+        // Confirmarlo muestra el impacto...
+        assert_eq!(
+            confirm_once(&mut session),
+            EncounterUpdate::PhaseAdvanced(EncounterPhase::DeathBeat),
+        );
 
         assert_eq!(session.current_text(), "CRACK.");
+
+        // ...y la confirmacion siguiente cierra el encuentro.
+        assert_eq!(confirm_once(&mut session), EncounterUpdate::PlayerDeath);
     }
 
     #[test]
@@ -1807,8 +1918,9 @@ mod lethal_tests {
 
         confirm_once(&mut session);
 
-        // La resolucion del jugador todavia se puede abandonar.
-        assert!(!session.is_lethal_locked());
+        // El desenlace ya esta comprometido: la resolucion de huir
+        // solo puede continuar hacia el ataque letal.
+        assert!(session.is_lethal_locked());
 
         confirm_once(&mut session);
 
@@ -2092,5 +2204,462 @@ mod input_precedence_tests {
         assert_eq!(session.update(BOTH_DIRECTIONS), EncounterUpdate::Idle);
 
         assert_eq!(session.selected_index(), 0);
+    }
+}
+
+#[cfg(test)]
+mod death_beat_tests {
+    use super::{
+        ActionOutcome, EncounterChoice, EncounterDefinition, EncounterInput, EncounterNode,
+        EncounterPhase, EncounterSession, EncounterUpdate, EnemyAction, EnemyTurn, PlayerAction,
+        SCP_173_ENCOUNTER,
+    };
+
+    const RELEASED: EncounterInput = EncounterInput {
+        next_down: false,
+        previous_down: false,
+        confirm_down: false,
+    };
+
+    const CONFIRM: EncounterInput = EncounterInput {
+        next_down: false,
+        previous_down: false,
+        confirm_down: true,
+    };
+
+    const NEXT: EncounterInput = EncounterInput {
+        next_down: true,
+        previous_down: false,
+        confirm_down: false,
+    };
+
+    const ATTACK: usize = 0;
+    const ITEM: usize = 1;
+    const FLEE: usize = 2;
+    const GAZE: usize = 3;
+
+    fn session() -> EncounterSession {
+        EncounterSession::new(SCP_173_ENCOUNTER)
+    }
+
+    fn confirm_once(session: &mut EncounterSession) -> EncounterUpdate {
+        let update = session.update(CONFIRM);
+
+        session.update(RELEASED);
+
+        update
+    }
+
+    fn select(session: &mut EncounterSession, index: usize) {
+        while session.selected_index() != index {
+            session.update(NEXT);
+
+            session.update(RELEASED);
+        }
+    }
+
+    fn play_safe_turn(session: &mut EncounterSession, index: usize) {
+        select(session, index);
+
+        confirm_once(session);
+
+        confirm_once(session);
+
+        confirm_once(session);
+    }
+
+    /// Lleva la sesion hasta el ataque letal por huida.
+    fn reach_lethal_attack() -> EncounterSession {
+        let mut session = session();
+
+        select(&mut session, FLEE);
+
+        confirm_once(&mut session);
+
+        confirm_once(&mut session);
+
+        assert_eq!(session.enemy_action(), Some(EnemyAction::LethalAttack));
+
+        session
+    }
+
+    // ----- El beat del impacto -----
+
+    #[test]
+    fn confirming_the_lethal_attack_enters_the_death_beat() {
+        let mut session = reach_lethal_attack();
+
+        let update = confirm_once(&mut session);
+
+        assert_eq!(
+            update,
+            EncounterUpdate::PhaseAdvanced(EncounterPhase::DeathBeat),
+            "el ataque letal no debe reportar la muerte todavia",
+        );
+
+        assert_eq!(session.phase(), EncounterPhase::DeathBeat);
+    }
+
+    #[test]
+    fn the_death_beat_shows_the_impact() {
+        let mut session = reach_lethal_attack();
+
+        confirm_once(&mut session);
+
+        assert_eq!(session.current_text(), "CRACK.");
+
+        assert_eq!(session.actions_title(), "IMPACTO");
+
+        assert_eq!(session.selected_index(), 0);
+    }
+
+    #[test]
+    fn the_death_beat_only_offers_continue() {
+        let mut session = reach_lethal_attack();
+
+        confirm_once(&mut session);
+
+        assert_eq!(session.choices().len(), 1);
+
+        assert_eq!(session.choices()[0].label, "CONTINUAR");
+
+        assert!(session.choices()[0].action.is_none());
+    }
+
+    #[test]
+    fn confirming_the_death_beat_reports_the_death() {
+        let mut session = reach_lethal_attack();
+
+        confirm_once(&mut session);
+
+        let update = confirm_once(&mut session);
+
+        assert_eq!(update, EncounterUpdate::PlayerDeath);
+
+        // El impacto sigue visible al cerrar el encuentro.
+        assert_eq!(session.current_text(), "CRACK.");
+    }
+
+    #[test]
+    fn the_impact_stays_visible_until_a_new_confirmation() {
+        let mut session = reach_lethal_attack();
+
+        session.update(CONFIRM);
+
+        assert_eq!(session.current_text(), "CRACK.");
+
+        // Sostener la tecla no cierra el encuentro ni borra el texto.
+        for _ in 0..60 {
+            assert_eq!(session.update(CONFIRM), EncounterUpdate::Idle);
+
+            assert_eq!(session.phase(), EncounterPhase::DeathBeat);
+
+            assert_eq!(session.current_text(), "CRACK.");
+        }
+    }
+
+    #[test]
+    fn a_held_confirm_cannot_cross_the_attack_and_the_death_beat() {
+        let mut session = reach_lethal_attack();
+
+        // Primera pulsacion: del ataque al impacto.
+        assert_eq!(
+            session.update(CONFIRM),
+            EncounterUpdate::PhaseAdvanced(EncounterPhase::DeathBeat),
+        );
+
+        // Sostenida no llega a la muerte.
+        for _ in 0..30 {
+            assert_eq!(session.update(CONFIRM), EncounterUpdate::Idle);
+        }
+
+        // Hace falta soltar para cerrar.
+        session.update(RELEASED);
+
+        assert_eq!(session.update(CONFIRM), EncounterUpdate::PlayerDeath);
+
+        // Y seguir sosteniendola no vuelve a reportar la muerte, asi
+        // que la pantalla de derrota no puede reintentar sola.
+        for _ in 0..30 {
+            assert_eq!(session.update(CONFIRM), EncounterUpdate::Idle);
+        }
+    }
+
+    // ----- Bloqueo de F6 -----
+
+    #[test]
+    fn fleeing_locks_the_exit_from_its_own_resolution() {
+        let mut session = session();
+
+        select(&mut session, FLEE);
+
+        // Antes de confirmar todavia se puede salir.
+        assert!(!session.is_lethal_locked());
+
+        confirm_once(&mut session);
+
+        assert_eq!(session.phase(), EncounterPhase::PlayerResolution);
+
+        assert!(
+            session.is_lethal_locked(),
+            "huir debe bloquear F6 desde su propia resolucion",
+        );
+    }
+
+    #[test]
+    fn the_fourth_action_locks_the_exit_from_its_resolution() {
+        let mut session = session();
+
+        for _ in 0..3 {
+            play_safe_turn(&mut session, ATTACK);
+        }
+
+        select(&mut session, ATTACK);
+
+        assert!(!session.is_lethal_locked());
+
+        confirm_once(&mut session);
+
+        assert_eq!(session.phase(), EncounterPhase::PlayerResolution);
+
+        assert_eq!(session.turn_count(), 4);
+
+        assert!(
+            session.is_lethal_locked(),
+            "la cuarta accion debe bloquear F6 desde su resolucion",
+        );
+    }
+
+    #[test]
+    fn normal_actions_in_the_first_three_turns_do_not_lock_the_exit() {
+        for index in [ATTACK, ITEM, GAZE] {
+            let mut session = session();
+
+            for turn in 1..=3 {
+                select(&mut session, index);
+
+                assert!(!session.is_lethal_locked());
+
+                // Resolucion del jugador.
+                confirm_once(&mut session);
+
+                assert_eq!(session.turn_count(), turn);
+
+                assert!(
+                    !session.is_lethal_locked(),
+                    "la accion {index} bloqueo la salida en el turno {turn}",
+                );
+
+                // Turno enemigo con Observe.
+                confirm_once(&mut session);
+
+                assert_eq!(session.enemy_action(), Some(EnemyAction::Observe));
+
+                assert!(!session.is_lethal_locked());
+
+                confirm_once(&mut session);
+            }
+        }
+    }
+
+    #[test]
+    fn every_lethal_phase_locks_the_exit() {
+        let mut session = session();
+
+        for _ in 0..3 {
+            play_safe_turn(&mut session, GAZE);
+        }
+
+        select(&mut session, GAZE);
+
+        confirm_once(&mut session);
+
+        // Secuencia forzada.
+        confirm_once(&mut session);
+
+        assert_eq!(session.phase(), EncounterPhase::ForcedSequence);
+        assert!(session.is_lethal_locked());
+
+        confirm_once(&mut session);
+        confirm_once(&mut session);
+        confirm_once(&mut session);
+
+        // Ataque letal.
+        assert_eq!(session.phase(), EncounterPhase::EnemyResolution);
+        assert_eq!(session.enemy_action(), Some(EnemyAction::LethalAttack));
+        assert!(session.is_lethal_locked());
+
+        // Impacto.
+        confirm_once(&mut session);
+
+        assert_eq!(session.phase(), EncounterPhase::DeathBeat);
+        assert!(session.is_lethal_locked());
+    }
+
+    // ----- Validacion de la definicion -----
+
+    const SOUND_FLEE: EnemyTurn = EnemyTurn {
+        action: EnemyAction::LethalAttack,
+        text: "huida",
+    };
+
+    const SOUND_FORCED: EnemyTurn = EnemyTurn {
+        action: EnemyAction::LethalAttack,
+        text: "parpadeo",
+    };
+
+    static ONE_CHOICE: [EncounterChoice; 1] = [EncounterChoice {
+        label: "ATACAR",
+        action: Some(PlayerAction::Attack),
+    }];
+
+    static ONE_NODE: [EncounterNode; 1] = [EncounterNode {
+        text: "texto",
+        choices: &ONE_CHOICE,
+    }];
+
+    static ATTACK_OUTCOME: [ActionOutcome; 1] = [ActionOutcome {
+        action: PlayerAction::Attack,
+        text: "golpeas",
+    }];
+
+    static NO_OUTCOMES: [ActionOutcome; 0] = [];
+
+    static ONE_STEP: [&str; 1] = ["cansancio"];
+
+    static NO_STEPS: [&str; 0] = [];
+
+    static NO_NODES: [EncounterNode; 0] = [];
+
+    fn valid_definition() -> EncounterDefinition {
+        EncounterDefinition {
+            entity_name: "PRUEBA",
+            nodes: &ONE_NODE,
+            start_node: 0,
+            outcomes: &ATTACK_OUTCOME,
+            enemy_turns: &[],
+            flee_response: SOUND_FLEE,
+            forced_steps: &ONE_STEP,
+            forced_response: SOUND_FORCED,
+            death_text: "CRACK.",
+        }
+    }
+
+    fn error_of(definition: EncounterDefinition) -> String {
+        definition
+            .validate()
+            .expect_err("la definicion deberia ser invalida")
+    }
+
+    #[test]
+    fn a_valid_definition_passes() {
+        assert!(valid_definition().validate().is_ok());
+
+        assert!(SCP_173_ENCOUNTER.validate().is_ok());
+    }
+
+    #[test]
+    fn a_definition_without_nodes_fails_clearly() {
+        let mut definition = valid_definition();
+
+        definition.nodes = &NO_NODES;
+
+        let error = error_of(definition);
+
+        assert!(error.contains("PRUEBA"), "sin la entidad: {error}");
+
+        assert!(error.contains("nodo"), "sin la causa: {error}");
+    }
+
+    #[test]
+    fn an_out_of_range_start_node_fails_clearly() {
+        let mut definition = valid_definition();
+
+        definition.start_node = 7;
+
+        let error = error_of(definition);
+
+        assert!(error.contains("7"), "sin el indice: {error}");
+
+        assert!(error.contains("nodo"), "sin la causa: {error}");
+    }
+
+    #[test]
+    fn a_missing_outcome_fails_clearly() {
+        let mut definition = valid_definition();
+
+        definition.outcomes = &NO_OUTCOMES;
+
+        let error = error_of(definition);
+
+        assert!(error.contains("ATACAR"), "sin la opcion: {error}");
+
+        assert!(error.contains("Attack"), "sin la accion: {error}");
+    }
+
+    #[test]
+    fn an_empty_forced_sequence_fails_clearly() {
+        let mut definition = valid_definition();
+
+        definition.forced_steps = &NO_STEPS;
+
+        let error = error_of(definition);
+
+        assert!(error.contains("secuencia forzada"), "poco claro: {error}");
+    }
+
+    #[test]
+    fn a_non_lethal_flee_response_fails_clearly() {
+        let mut definition = valid_definition();
+
+        definition.flee_response = EnemyTurn {
+            action: EnemyAction::Observe,
+            text: "huida",
+        };
+
+        let error = error_of(definition);
+
+        assert!(error.contains("huir"), "poco claro: {error}");
+
+        assert!(error.contains("letal"), "poco claro: {error}");
+    }
+
+    #[test]
+    fn a_non_lethal_forced_response_fails_clearly() {
+        let mut definition = valid_definition();
+
+        definition.forced_response = EnemyTurn {
+            action: EnemyAction::Observe,
+            text: "parpadeo",
+        };
+
+        let error = error_of(definition);
+
+        assert!(error.contains("parpadeo"), "poco claro: {error}");
+
+        assert!(error.contains("letal"), "poco claro: {error}");
+    }
+
+    #[test]
+    fn an_empty_death_text_fails_clearly() {
+        for death_text in ["", "   "] {
+            let mut definition = valid_definition();
+
+            definition.death_text = death_text;
+
+            let error = error_of(definition);
+
+            assert!(error.contains("texto de muerte"), "poco claro: {error}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Definición de encuentro inválida")]
+    fn building_a_session_from_an_invalid_definition_panics() {
+        let mut definition = valid_definition();
+
+        definition.nodes = &NO_NODES;
+
+        let _ = EncounterSession::new(definition);
     }
 }
