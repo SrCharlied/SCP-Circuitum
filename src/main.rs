@@ -29,7 +29,7 @@ use crate::game::{
     LevelSuccessOutcome, VictoryMenuOption, confirm_level_success, state_after_reaching_goal,
 };
 use crate::maze::load_maze;
-use crate::mechanics::blink::{BlinkSystem, BlinkUpdate, blink_enabled, effective_observation};
+use crate::mechanics::blink::{BlinkSystem, BlinkUpdate, effective_observation};
 use crate::mouse_capture::{MouseCapture, should_capture_cursor};
 use crate::player::{MouseLook, PlayerMotion, process_events};
 use crate::renderer::{
@@ -627,13 +627,7 @@ fn main() {
 
             // El parpadeo se resuelve antes de mover a SCP-173: la
             // ventana cerrada debe valer desde su primer frame.
-            let blink_update = if blink_enabled(game_session.current_level_number()) {
-                blink_system.update(delta_time, manual_blink_down)
-            } else {
-                blink_system.sync_manual_key(manual_blink_down);
-
-                BlinkUpdate::Idle
-            };
+            let blink_update = blink_system.update(delta_time, manual_blink_down);
 
             if blink_update == BlinkUpdate::Started {
                 println!("Parpadeo: ojos cerrados. Fase {:?}", blink_system.phase());
@@ -844,9 +838,7 @@ fn main() {
                 // El panel del encuentro debe quedar legible aunque
                 // haya empezado con los ojos cerrados, así que allí
                 // no se dibuja ni la barra ni los párpados.
-                if game_state != GameState::Encounter
-                    && blink_enabled(game_session.current_level_number())
-                {
+                if game_state != GameState::Encounter {
                     render_blink_bar(
                         &mut framebuffer,
                         blink_system.meter_ratio(),

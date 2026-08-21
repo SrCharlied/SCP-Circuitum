@@ -33,11 +33,6 @@ pub fn effective_observation(geometrically_observed: bool, eyes_closed: bool) ->
     geometrically_observed && !eyes_closed
 }
 
-/// El parpadeo solo importa donde existe SCP-173.
-pub fn blink_enabled(level_number: usize) -> bool {
-    level_number == 1
-}
-
 pub struct BlinkSystem {
     open_duration: f32,
     closed_duration: f32,
@@ -205,7 +200,7 @@ fn sanitized_ratio(ratio: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{BlinkPhase, BlinkSystem, BlinkUpdate, blink_enabled, effective_observation};
+    use super::{BlinkPhase, BlinkSystem, BlinkUpdate, effective_observation};
 
     const OPEN: f32 = 6.0;
     const CLOSED: f32 = 0.22;
@@ -621,7 +616,7 @@ mod tests {
         );
     }
 
-    // ----- Observación y nivel -----
+    // ----- Observación -----
 
     #[test]
     fn closing_the_eyes_cancels_the_observation() {
@@ -632,14 +627,5 @@ mod tests {
         assert!(!effective_observation(false, false));
 
         assert!(!effective_observation(false, true));
-    }
-
-    #[test]
-    fn blinking_only_matters_on_the_first_level() {
-        assert!(blink_enabled(1));
-
-        for level in [0, 2, 3, 99] {
-            assert!(!blink_enabled(level), "el nivel {level} no tiene parpadeo");
-        }
     }
 }
