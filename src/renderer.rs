@@ -1313,27 +1313,30 @@ fn wrap_text(text: &str, max_characters: usize) -> Vec<String> {
 
     let mut lines = Vec::new();
 
-    let mut current = String::new();
+    // Los saltos de línea del contenido separan párrafos y se
+    // conservan: el texto de los turnos los usa para respirar.
+    for paragraph in text.split('\n') {
+        let mut current = String::new();
 
-    for word in text.split_whitespace() {
-        let word_length = word.chars().count();
+        for word in paragraph.split_whitespace() {
+            let word_length = word.chars().count();
 
-        let current_length = current.chars().count();
+            let current_length = current.chars().count();
 
-        if current.is_empty() {
-            current.push_str(word);
-        } else if current_length + 1 + word_length <= max_characters {
-            current.push(' ');
+            if current.is_empty() {
+                current.push_str(word);
+            } else if current_length + 1 + word_length <= max_characters {
+                current.push(' ');
 
-            current.push_str(word);
-        } else {
-            lines.push(std::mem::take(&mut current));
+                current.push_str(word);
+            } else {
+                lines.push(std::mem::take(&mut current));
 
-            current.push_str(word);
+                current.push_str(word);
+            }
         }
-    }
 
-    if !current.is_empty() {
+        // Un párrafo vacío conserva su renglón en blanco.
         lines.push(current);
     }
 
@@ -1441,6 +1444,7 @@ pub fn render_encounter(
     framebuffer: &mut Framebuffer,
     entity_name: &str,
     text: &str,
+    actions_title: &str,
     choices: &[EncounterChoice],
     selected_index: usize,
 ) {
@@ -1529,7 +1533,7 @@ pub fn render_encounter(
 
     draw_text(
         framebuffer,
-        "ACCIONES",
+        actions_title,
         right_content_x,
         layout.panels_y + 16,
         1,
@@ -2827,7 +2831,7 @@ mod encounter_screen_tests {
         ENCOUNTER_LINE_HEIGHT, ENCOUNTER_MAX_TEXT_LINES, EncounterLayout, render_encounter,
         text_width, wrap_text,
     };
-    use crate::encounter::{DEMO_ENCOUNTER, EncounterChoice, EncounterSession};
+    use crate::encounter::{EncounterChoice, EncounterSession, SCP_173_ENCOUNTER};
     use crate::framebuffer::Framebuffer;
 
     const WINDOW_WIDTH: usize = 1300;
@@ -2838,7 +2842,7 @@ mod encounter_screen_tests {
     }
 
     fn demo_choices() -> &'static [EncounterChoice] {
-        DEMO_ENCOUNTER.nodes[0].choices
+        SCP_173_ENCOUNTER.nodes[0].choices
     }
 
     #[test]
@@ -2973,7 +2977,7 @@ mod encounter_screen_tests {
 
         let characters_per_line = layout.text_characters_per_line(2);
 
-        let lines = wrap_text(DEMO_ENCOUNTER.nodes[0].text, characters_per_line);
+        let lines = wrap_text(SCP_173_ENCOUNTER.nodes[0].text, characters_per_line);
 
         assert!(
             lines.len() <= ENCOUNTER_MAX_TEXT_LINES,
@@ -2992,11 +2996,61 @@ mod encounter_screen_tests {
         assert!(text_bottom <= layout.panels_y + layout.panels_height);
     }
 
+    /// Todos los textos del encuentro, no solo el de apertura, deben
+    /// caber en los renglones visibles con sus saltos de párrafo.
+    #[test]
+    fn every_turn_text_fits_in_the_left_panel() {
+        let layout = layout();
+
+        let characters_per_line = layout.text_characters_per_line(2);
+
+        let mut texts: Vec<String> = SCP_173_ENCOUNTER
+            .enemy_texts
+            .iter()
+            .map(|text| text.to_string())
+            .collect();
+
+        for outcome in SCP_173_ENCOUNTER.outcomes {
+            // El marcador de daño se sustituye por un dígito.
+            texts.push(outcome.text.replace("{damage}", "0"));
+            texts.push(outcome.text.replace("{damage}", "1"));
+        }
+
+        for node in SCP_173_ENCOUNTER.nodes {
+            texts.push(node.text.to_string());
+        }
+
+        for text in &texts {
+            let lines = wrap_text(text, characters_per_line);
+
+            assert!(
+                lines.len() <= ENCOUNTER_MAX_TEXT_LINES,
+                "necesita {} renglones y caben {ENCOUNTER_MAX_TEXT_LINES}: {text}",
+                lines.len(),
+            );
+
+            for line in &lines {
+                assert!(
+                    text_width(line, 2) + 40 <= layout.left_width,
+                    "el renglón se sale del panel: {line}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_paragraph_breaks_survive_the_wrapping() {
+        // Un salto doble deja un renglón en blanco entre párrafos.
+        let lines = wrap_text("uno\n\ndos", 40);
+
+        assert_eq!(lines, vec!["uno", "", "dos"]);
+    }
+
     #[test]
     fn the_entity_name_and_footer_fit() {
         let layout = layout();
 
-        assert!(text_width(DEMO_ENCOUNTER.entity_name, 2) + 40 <= layout.left_width);
+        assert!(text_width(SCP_173_ENCOUNTER.entity_name, 2) + 40 <= layout.left_width);
 
         let keys = "W / S - ELEGIR    ENTER / E - CONFIRMAR    F6 - CERRAR";
 
@@ -3021,7 +3075,7 @@ mod encounter_screen_tests {
 
     #[test]
     fn wrapping_keeps_every_word() {
-        let text = DEMO_ENCOUNTER.nodes[0].text;
+        let text = SCP_173_ENCOUNTER.nodes[0].text;
 
         let original: Vec<&str> = text.split_whitespace().collect();
 
@@ -3051,7 +3105,7 @@ mod encounter_screen_tests {
     fn the_encounter_renders_for_every_selection() {
         let mut framebuffer = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
 
-        let mut session = EncounterSession::new(DEMO_ENCOUNTER);
+        let mut session = EncounterSession::new(SCP_173_ENCOUNTER);
 
         let text = session.node().expect("el nodo debe existir").text;
 
@@ -3060,6 +3114,7 @@ mod encounter_screen_tests {
                 &mut framebuffer,
                 session.entity_name(),
                 text,
+                session.actions_title(),
                 session.choices(),
                 session.selected_index(),
             );

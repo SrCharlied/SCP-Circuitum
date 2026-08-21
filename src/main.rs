@@ -17,7 +17,8 @@ use std::time::{Duration, Instant};
 
 use crate::audio::AudioManager;
 use crate::encounter::{
-    DEMO_ENCOUNTER, EncounterInput, EncounterSession, EncounterUpdate, GameplayGate, GameplayStep,
+    EncounterInput, EncounterSession, EncounterUpdate, GameplayGate, GameplayStep,
+    SCP_173_ENCOUNTER,
 };
 use crate::framebuffer::Framebuffer;
 use crate::game::{
@@ -138,7 +139,7 @@ fn main() {
     let mut cursor_hidden = false;
 
     // Encuentro de demostración: se abre y cierra con F6.
-    let mut encounter_session = EncounterSession::new(DEMO_ENCOUNTER);
+    let mut encounter_session = EncounterSession::new(SCP_173_ENCOUNTER);
 
     // Impide que el input del encuentro se filtre al gameplay al
     // volver al mundo. Servirá igual para ReturnToWorld.
@@ -275,7 +276,7 @@ fn main() {
                     // Apertura provisional del encuentro de demostración.
                     game_state = GameState::Encounter;
 
-                    encounter_session = EncounterSession::new(DEMO_ENCOUNTER);
+                    encounter_session = EncounterSession::new(SCP_173_ENCOUNTER);
 
                     // Con el estado real del teclado: solo se bloquea
                     // lo que de verdad estaba sostenido.
@@ -290,10 +291,15 @@ fn main() {
                     // El gameplay no se reanuda aquí: la compuerta lo
                     // retiene hasta que se suelten las teclas.
                     gameplay_gate.arm();
-                } else if let EncounterUpdate::Confirmed(choice) =
+                } else if let EncounterUpdate::ActionTaken(action) =
                     encounter_session.update(encounter_input)
                 {
-                    println!("Encuentro: opción confirmada -> {}", choice.label);
+                    println!(
+                        "Encuentro: {action:?} | turno {} | ataques {} | fase {:?}",
+                        encounter_session.turn_count(),
+                        encounter_session.attack_count(),
+                        encounter_session.phase(),
+                    );
                 }
             }
 
@@ -602,15 +608,11 @@ fn main() {
                 // La escena queda congelada detrás del panel: se
                 // dibuja igual que en Playing y luego se atenúa.
                 if game_state == GameState::Encounter {
-                    let text = encounter_session
-                        .node()
-                        .map(|node| node.text)
-                        .unwrap_or_default();
-
                     render_encounter(
                         &mut framebuffer,
                         encounter_session.entity_name(),
-                        text,
+                        encounter_session.current_text(),
+                        encounter_session.actions_title(),
                         encounter_session.choices(),
                         encounter_session.selected_index(),
                     );
