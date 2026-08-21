@@ -15,7 +15,7 @@ use nalgebra_glm::Vec2;
 use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 
-use crate::audio::AudioManager;
+use crate::audio::{AudioManager, should_play_crack};
 use crate::encounter::{
     EdgeTrigger, EncounterInput, EncounterSession, EncounterUpdate, GameplayGate, GameplayStep,
     SCP_173_ENCOUNTER,
@@ -297,6 +297,11 @@ fn main() {
 
                     encounter_session = EncounterSession::new(SCP_173_ENCOUNTER);
 
+                    // Un impacto largo no debe invadir el terminal.
+                    if let Some(audio) = audio.as_mut() {
+                        audio.stop_crack();
+                    }
+
                     previous_frame = Instant::now();
                 } else if defeat_confirm.update(encounter_input.confirm_down) {
                     // Reintentar el sector: todo vuelve a su estado
@@ -314,6 +319,9 @@ fn main() {
 
                     if let Some(audio) = audio.as_mut() {
                         audio.stop_footsteps();
+
+                        // Ni tampoco la partida nueva.
+                        audio.stop_crack();
                     }
 
                     // El input que confirmó el reintento no debe
@@ -343,7 +351,19 @@ fn main() {
                     // retiene hasta que se suelten las teclas.
                     gameplay_gate.arm();
                 } else {
-                    match encounter_session.update(encounter_input) {
+                    let update = encounter_session.update(encounter_input);
+
+                    // El impacto suena al entrar en el beat de
+                    // muerte, que ocurre en un único frame: por eso
+                    // se dispara exactamente una vez, y por las dos
+                    // rutas letales por igual.
+                    if should_play_crack(update)
+                        && let Some(audio) = audio.as_mut()
+                    {
+                        audio.play_crack();
+                    }
+
+                    match update {
                         EncounterUpdate::ActionTaken(action) => {
                             println!(
                                 "Encuentro: {action:?} | turno {} | ataques {} | fase {:?}",

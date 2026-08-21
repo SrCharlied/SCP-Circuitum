@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 
+use crate::encounter::{EncounterPhase, EncounterUpdate};
 use crate::game::GameState;
 use crate::player::PlayerMotion;
 
@@ -32,6 +33,46 @@ const RUNNING_FOOTSTEP_INTERVAL: f32 = 0.32;
 /// Tope de pasos sonando a la vez. Sin él, un efecto largo podría
 /// acumularse indefinidamente mientras el jugador camina.
 const MAX_CONCURRENT_FOOTSTEPS: usize = 4;
+
+/// Impacto letal de SCP-173.
+const CRACK_PATH: &str = "./assets/audio/crack.ogg";
+
+/// Por encima de los pasos: es el desenlace del encuentro.
+const CRACK_VOLUME: f32 = 0.75;
+
+/// Lee un efecto del disco una sola vez, al arrancar.
+///
+/// Si falta, el juego continúa sin él: devuelve `None` junto al
+/// indicador de desactivado, y el aviso se imprime una única vez.
+/// Cada efecto se carga por separado, así que un archivo ausente no
+/// arrastra a los demás.
+fn load_effect(path: &str, missing_description: &str) -> (Option<Arc<[u8]>>, bool) {
+    match std::fs::read(path) {
+        Ok(bytes) => (Some(Arc::from(bytes.into_boxed_slice())), false),
+
+        Err(error) => {
+            eprintln!(
+                "Audio: no se pudo abrir '{path}': {error}. \
+                 La partida continúa sin {missing_description}."
+            );
+
+            (None, true)
+        }
+    }
+}
+
+/// Si este resultado del encuentro debe disparar el impacto.
+///
+/// El sonido pertenece al instante en que aparece "CRACK.", no al
+/// cierre del encuentro: por eso solo la entrada en `DeathBeat` lo
+/// dispara, y lo hace una sola vez porque esa transición ocurre en
+/// un único frame.
+pub fn should_play_crack(update: EncounterUpdate) -> bool {
+    matches!(
+        update,
+        EncounterUpdate::PhaseAdvanced(EncounterPhase::DeathBeat)
+    )
+}
 
 /// Qué debe ocurrir con la música ambiental en el frame actual.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -157,6 +198,14 @@ pub struct AudioManager {
     footstep_cadence: FootstepCadence,
 
     footsteps_disabled: bool,
+
+    /// El OGG del impacto, también residente en memoria.
+    crack_sound: Option<Arc<[u8]>>,
+
+    /// El impacto en curso. Solo puede haber uno.
+    crack_player: Option<Player>,
+
+    crack_disabled: bool,
 }
 
 impl AudioManager {
@@ -169,20 +218,11 @@ impl AudioManager {
         // simplemente cierra la ventana.
         device_sink.log_on_drop(false);
 
-        // El efecto de paso se carga una sola vez al inicio. Si
-        // falta, el juego sigue: solo se queda sin pasos.
-        let (footstep_sound, footsteps_disabled) = match std::fs::read(FOOTSTEP_PATH) {
-            Ok(bytes) => (Some(Arc::from(bytes.into_boxed_slice())), false),
+        // Los efectos se cargan una sola vez al inicio, y por
+        // separado: que falte uno no deja al juego sin los otros.
+        let (footstep_sound, footsteps_disabled) = load_effect(FOOTSTEP_PATH, "pasos");
 
-            Err(error) => {
-                eprintln!(
-                    "Audio: no se pudo abrir '{FOOTSTEP_PATH}': {error}. \
-                     La partida continúa sin pasos."
-                );
-
-                (None, true)
-            }
-        };
+        let (crack_sound, crack_disabled) = load_effect(CRACK_PATH, "el impacto");
 
         Ok(Self {
             device_sink,
@@ -192,6 +232,9 @@ impl AudioManager {
             footstep_players: Vec::new(),
             footstep_cadence: FootstepCadence::new(),
             footsteps_disabled,
+            crack_sound,
+            crack_player: None,
+            crack_disabled,
         })
     }
 
@@ -287,6 +330,61 @@ impl AudioManager {
         self.footstep_players.push(player);
 
         Ok(())
+    }
+
+    /// Reproduce el impacto letal una vez.
+    ///
+    /// Devuelve `true` si llegó a sonar. Cualquier fallo deja el
+    /// efecto desactivado y la partida continúa: perder el sonido no
+    /// puede interrumpir el encuentro.
+    pub fn play_crack(&mut self) -> bool {
+        if self.crack_disabled {
+            return false;
+        }
+
+        let Some(crack_sound) = self.crack_sound.as_ref() else {
+            return false;
+        };
+
+        // Solo hay un impacto: si quedaba uno sonando, se descarta.
+        self.crack_player = None;
+
+        // `Arc` se clona barato: el decodificador lee de los bytes ya
+        // residentes en memoria, sin volver al disco.
+        let crack = match Decoder::new(Cursor::new(Arc::clone(crack_sound))) {
+            Ok(decoder) => decoder,
+
+            Err(error) => {
+                eprintln!(
+                    "Audio: no se pudo decodificar '{CRACK_PATH}': {error}. \
+                     La partida continúa sin el impacto."
+                );
+
+                self.crack_disabled = true;
+
+                return false;
+            }
+        };
+
+        // Un Player propio sobre el mixer que ya existe: no se abre
+        // otro dispositivo ni otro stream.
+        let player = Player::connect_new(self.device_sink.mixer());
+
+        player.set_volume(CRACK_VOLUME);
+
+        player.append(crack);
+
+        // Mantenerlo vivo es lo que deja que el efecto termine.
+        self.crack_player = Some(player);
+
+        true
+    }
+
+    /// Corta el impacto. Se usa al reintentar o al volver al
+    /// terminal, para que un archivo largo no invada la partida
+    /// siguiente.
+    pub fn stop_crack(&mut self) {
+        self.crack_player = None;
     }
 
     /// Detiene los pasos en curso y reinicia la cadencia.
@@ -543,5 +641,230 @@ mod footstep_tests {
 
         rodio::Decoder::new(std::io::Cursor::new(bytes))
             .expect("rodio debe poder decodificar el efecto de paso");
+    }
+}
+
+#[cfg(test)]
+mod crack_tests {
+    use super::{CRACK_PATH, should_play_crack};
+    use crate::encounter::{
+        EncounterInput, EncounterPhase, EncounterSession, EncounterUpdate, PlayerAction,
+        SCP_173_ENCOUNTER,
+    };
+
+    const RELEASED: EncounterInput = EncounterInput {
+        next_down: false,
+        previous_down: false,
+        confirm_down: false,
+    };
+
+    const CONFIRM: EncounterInput = EncounterInput {
+        next_down: false,
+        previous_down: false,
+        confirm_down: true,
+    };
+
+    const NEXT: EncounterInput = EncounterInput {
+        next_down: true,
+        previous_down: false,
+        confirm_down: false,
+    };
+
+    const FLEE: usize = 2;
+    const GAZE: usize = 3;
+
+    fn session() -> EncounterSession {
+        EncounterSession::new(SCP_173_ENCOUNTER)
+    }
+
+    fn select(session: &mut EncounterSession, index: usize) {
+        while session.selected_index() != index {
+            session.update(NEXT);
+
+            session.update(RELEASED);
+        }
+    }
+
+    // ----- El asset -----
+
+    #[test]
+    fn the_crack_asset_exists_and_can_be_read() {
+        let bytes = std::fs::read(CRACK_PATH).expect("el efecto de impacto debe existir");
+
+        assert!(!bytes.is_empty());
+
+        // Contenedor OGG.
+        assert_eq!(&bytes[..4], b"OggS");
+    }
+
+    #[test]
+    fn rodio_decodes_the_crack_asset_from_memory() {
+        use rodio::Source;
+
+        // No abre dispositivo de audio: solo comprueba que rodio
+        // entiende el archivo que se cargará en memoria.
+        let bytes = std::fs::read(CRACK_PATH).expect("el efecto de impacto debe existir");
+
+        let decoder = rodio::Decoder::new(std::io::Cursor::new(bytes))
+            .expect("rodio debe poder decodificar el impacto");
+
+        let channels = decoder.channels().get();
+
+        let sample_rate = decoder.sample_rate().get();
+
+        let duration = decoder.total_duration();
+
+        println!("CRACK canales={channels} sample_rate={sample_rate} duracion={duration:?}");
+
+        // Y produce audio de verdad, no un flujo vacío.
+        let samples = decoder.count();
+
+        assert!(samples > 0, "el impacto no produjo ninguna muestra");
+
+        println!(
+            "CRACK muestras={samples} segundos={:.3}",
+            samples as f64 / (sample_rate as f64 * channels as f64),
+        );
+    }
+
+    // ----- El disparo -----
+
+    #[test]
+    fn only_entering_the_death_beat_plays_the_crack() {
+        assert!(should_play_crack(EncounterUpdate::PhaseAdvanced(
+            EncounterPhase::DeathBeat
+        )));
+
+        // Ningún otro resultado lo dispara.
+        assert!(!should_play_crack(EncounterUpdate::Idle));
+
+        assert!(!should_play_crack(EncounterUpdate::SelectionChanged));
+
+        assert!(!should_play_crack(EncounterUpdate::PlayerDeath));
+
+        for action in [
+            PlayerAction::Attack,
+            PlayerAction::Item,
+            PlayerAction::Flee,
+            PlayerAction::MaintainGaze,
+        ] {
+            assert!(!should_play_crack(EncounterUpdate::ActionTaken(action)));
+        }
+
+        for phase in [
+            EncounterPhase::PlayerChoice,
+            EncounterPhase::PlayerResolution,
+            EncounterPhase::ForcedSequence,
+            EncounterPhase::EnemyResolution,
+        ] {
+            assert!(
+                !should_play_crack(EncounterUpdate::PhaseAdvanced(phase)),
+                "la fase {phase:?} no debe disparar el impacto",
+            );
+        }
+    }
+
+    /// Recorre un encuentro completo contando disparos del impacto.
+    fn triggers_along(mut session: EncounterSession, first_choice: usize) -> usize {
+        select(&mut session, first_choice);
+
+        let mut triggers = 0;
+
+        for _ in 0..40 {
+            let update = session.update(CONFIRM);
+
+            session.update(RELEASED);
+
+            if should_play_crack(update) {
+                triggers += 1;
+            }
+
+            if update == EncounterUpdate::PlayerDeath {
+                break;
+            }
+        }
+
+        triggers
+    }
+
+    #[test]
+    fn both_lethal_routes_trigger_the_crack_exactly_once() {
+        // Huir: resolución, ataque letal, impacto.
+        assert_eq!(triggers_along(session(), FLEE), 1);
+
+        // Cuarto turno: secuencia forzada, ataque letal, impacto.
+        assert_eq!(triggers_along(session(), GAZE), 1);
+    }
+
+    #[test]
+    fn entering_the_death_beat_reports_exactly_that_phase() {
+        let mut session = session();
+
+        select(&mut session, FLEE);
+
+        session.update(CONFIRM);
+        session.update(RELEASED);
+
+        session.update(CONFIRM);
+        session.update(RELEASED);
+
+        let update = session.update(CONFIRM);
+
+        assert_eq!(
+            update,
+            EncounterUpdate::PhaseAdvanced(EncounterPhase::DeathBeat),
+        );
+
+        assert!(should_play_crack(update));
+    }
+
+    #[test]
+    fn holding_confirm_in_the_death_beat_does_not_retrigger() {
+        let mut session = session();
+
+        select(&mut session, FLEE);
+
+        session.update(CONFIRM);
+        session.update(RELEASED);
+
+        session.update(CONFIRM);
+        session.update(RELEASED);
+
+        // Entrada al impacto.
+        assert!(should_play_crack(session.update(CONFIRM)));
+
+        // Sostener la tecla no vuelve a producir el evento.
+        for _ in 0..60 {
+            let update = session.update(CONFIRM);
+
+            assert_eq!(update, EncounterUpdate::Idle);
+
+            assert!(!should_play_crack(update));
+        }
+    }
+
+    #[test]
+    fn confirming_after_release_reports_the_death_without_replaying() {
+        let mut session = session();
+
+        select(&mut session, FLEE);
+
+        session.update(CONFIRM);
+        session.update(RELEASED);
+
+        session.update(CONFIRM);
+        session.update(RELEASED);
+
+        session.update(CONFIRM);
+        session.update(RELEASED);
+
+        assert_eq!(session.phase(), EncounterPhase::DeathBeat);
+
+        let update = session.update(CONFIRM);
+
+        assert_eq!(update, EncounterUpdate::PlayerDeath);
+
+        // Cerrar el encuentro no vuelve a sonar.
+        assert!(!should_play_crack(update));
     }
 }
