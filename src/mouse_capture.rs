@@ -292,4 +292,12 @@ mod tests {
     fn the_success_report_does_not_request_capture() {
         assert!(!should_capture_cursor(GameState::LevelSuccess, true));
     }
+
+    #[test]
+    fn defeat_does_not_request_capture() {
+        // Al morir, el cursor debe quedar libre para el menú.
+        assert!(!should_capture_cursor(GameState::Defeat, true));
+
+        assert!(!should_capture_cursor(GameState::Defeat, false));
+    }
 }

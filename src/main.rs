@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use crate::audio::AudioManager;
 use crate::encounter::{
-    EncounterInput, EncounterSession, EncounterUpdate, GameplayGate, GameplayStep,
+    EdgeTrigger, EncounterInput, EncounterSession, EncounterUpdate, GameplayGate, GameplayStep,
     SCP_173_ENCOUNTER,
 };
 use crate::framebuffer::Framebuffer;
@@ -29,9 +29,10 @@ use crate::maze::load_maze;
 use crate::mouse_capture::{MouseCapture, should_capture_cursor};
 use crate::player::{MouseLook, PlayerMotion, process_events};
 use crate::renderer::{
-    PlaneTable, WorldSprite, draw_text, render_3d, render_encounter, render_level_selection,
-    render_level_success, render_level_transition, render_minimap, render_pause_menu,
-    render_sprite, render_stamina_bar, render_victory_screen, render_welcome_screen,
+    PlaneTable, WorldSprite, draw_text, render_3d, render_defeat_screen, render_encounter,
+    render_level_selection, render_level_success, render_level_transition, render_minimap,
+    render_pause_menu, render_sprite, render_stamina_bar, render_victory_screen,
+    render_welcome_screen,
 };
 use crate::scp173::Scp173;
 use crate::texture::{SpriteTexture, TextureSet};
@@ -137,6 +138,9 @@ fn main() {
     let mut mouse_capture = MouseCapture::new();
 
     let mut cursor_hidden = false;
+
+    // Confirmación de la pantalla de derrota, con su propio flanco.
+    let mut defeat_confirm = EdgeTrigger::new();
 
     // Encuentro de demostración: se abre y cierra con F6.
     let mut encounter_session = EncounterSession::new(SCP_173_ENCOUNTER);
@@ -284,22 +288,98 @@ fn main() {
                 }
             }
 
+            GameState::Defeat => {
+                if window.is_key_pressed(Key::Escape, KeyRepeat::No) {
+                    // Volver al terminal descarta el encuentro.
+                    game_state = GameState::LevelSelection;
+
+                    level_selection_menu = LevelSelectionMenu::new();
+
+                    encounter_session = EncounterSession::new(SCP_173_ENCOUNTER);
+
+                    previous_frame = Instant::now();
+                } else if defeat_confirm.update(encounter_input.confirm_down) {
+                    // Reintentar el sector: todo vuelve a su estado
+                    // inicial y el encuentro se descarta.
+                    let (retry_maze, retry_player) =
+                        load_maze(game_session.current_level_path(), BLOCK_SIZE);
+
+                    maze = retry_maze;
+                    player = retry_player;
+                    scp_173.reset();
+
+                    encounter_session = EncounterSession::new(SCP_173_ENCOUNTER);
+
+                    mouse_look.reset();
+
+                    if let Some(audio) = audio.as_mut() {
+                        audio.stop_footsteps();
+                    }
+
+                    // El input que confirmó el reintento no debe
+                    // filtrarse al gameplay.
+                    gameplay_gate.arm();
+
+                    enter_locked = true;
+
+                    game_state = GameState::Playing;
+
+                    previous_frame = Instant::now();
+
+                    println!(
+                        "Reintento del sector: {}",
+                        game_session.current_level_path(),
+                    );
+                }
+            }
+
             GameState::Encounter => {
-                if window.is_key_pressed(Key::F6, KeyRepeat::No) {
+                if window.is_key_pressed(Key::F6, KeyRepeat::No)
+                    && !encounter_session.is_lethal_locked()
+                {
                     game_state = GameState::Playing;
 
                     // El gameplay no se reanuda aquí: la compuerta lo
                     // retiene hasta que se suelten las teclas.
                     gameplay_gate.arm();
-                } else if let EncounterUpdate::ActionTaken(action) =
-                    encounter_session.update(encounter_input)
-                {
-                    println!(
-                        "Encuentro: {action:?} | turno {} | ataques {} | fase {:?}",
-                        encounter_session.turn_count(),
-                        encounter_session.attack_count(),
-                        encounter_session.phase(),
-                    );
+                } else {
+                    match encounter_session.update(encounter_input) {
+                        EncounterUpdate::ActionTaken(action) => {
+                            println!(
+                                "Encuentro: {action:?} | turno {} | ataques {} | fase {:?}",
+                                encounter_session.turn_count(),
+                                encounter_session.attack_count(),
+                                encounter_session.phase(),
+                            );
+                        }
+
+                        EncounterUpdate::PhaseAdvanced(phase) => {
+                            println!(
+                                "Encuentro: fase {phase:?} | enemigo {:?} | paso {}",
+                                encounter_session.enemy_action(),
+                                encounter_session.forced_step(),
+                            );
+                        }
+
+                        EncounterUpdate::PlayerDeath => {
+                            game_state = GameState::Defeat;
+
+                            // Una confirmación todavía sostenida no
+                            // debe reintentar de inmediato.
+                            defeat_confirm.seed(encounter_input.confirm_down);
+
+                            if let Some(audio) = audio.as_mut() {
+                                audio.stop_footsteps();
+                            }
+
+                            // Descarta el tiempo acumulado.
+                            previous_frame = Instant::now();
+
+                            println!("Encuentro: sujeto eliminado.");
+                        }
+
+                        _ => {}
+                    }
                 }
             }
 
@@ -526,6 +606,10 @@ fn main() {
                     level_success_option,
                     game_session.has_next_level(),
                 );
+            }
+
+            GameState::Defeat => {
+                render_defeat_screen(&mut framebuffer);
             }
 
             GameState::Victory => {

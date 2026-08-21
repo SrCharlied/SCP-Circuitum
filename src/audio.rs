@@ -336,7 +336,7 @@ impl AudioManager {
 
 #[cfg(test)]
 mod tests {
-    use super::{AmbientMusicAction, ambient_music_action};
+    use super::{AmbientMusicAction, ambient_music_action, music_belongs_to};
     use crate::game::GameState;
 
     #[test]
@@ -373,6 +373,23 @@ mod tests {
             ambient_music_action(GameState::LevelTransition, true),
             AmbientMusicAction::Leave,
         );
+    }
+
+    #[test]
+    fn defeat_stops_the_music_and_the_footsteps() {
+        // Al morir, la música no continúa.
+        assert_eq!(
+            ambient_music_action(GameState::Defeat, true),
+            AmbientMusicAction::Stop,
+        );
+
+        assert_eq!(
+            ambient_music_action(GameState::Defeat, false),
+            AmbientMusicAction::Leave,
+        );
+
+        // Y los pasos tampoco: solo suenan en Playing.
+        assert!(!music_belongs_to(GameState::Defeat));
     }
 
     #[test]

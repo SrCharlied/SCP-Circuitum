@@ -1608,6 +1608,83 @@ pub fn render_encounter(
     );
 }
 
+/// Informe de baja del sujeto. Pantalla mínima, misma estética
+/// industrial que el resto de terminales.
+pub fn render_defeat_screen(framebuffer: &mut Framebuffer) {
+    use terminal_palette as palette;
+
+    let width = framebuffer.width;
+    let height = framebuffer.height;
+
+    fill_rect(framebuffer, 0, 0, width, height, palette::BACKGROUND);
+
+    draw_terminal_header(
+        framebuffer,
+        "INFORME DE BAJA",
+        "FUNDACIÓN // REGISTRO INTERNO // NO DIFUNDIR",
+    );
+
+    let panel_x = 200;
+    let panel_width = width.saturating_sub(panel_x * 2);
+    let panel_y = 250;
+    let panel_height = 260;
+
+    draw_panel(
+        framebuffer,
+        panel_x,
+        panel_y,
+        panel_width,
+        panel_height,
+        palette::PANEL,
+        palette::ALERT,
+    );
+
+    let heading = "SUJETO ELIMINADO";
+
+    let heading_x = panel_x + panel_width.saturating_sub(text_width(heading, 4)) / 2;
+
+    draw_text(
+        framebuffer,
+        heading,
+        heading_x,
+        panel_y + 48,
+        4,
+        palette::ALERT,
+    );
+
+    draw_divider(
+        framebuffer,
+        panel_x + 40,
+        panel_y + 122,
+        panel_width - 80,
+        palette::BORDER,
+    );
+
+    let cause = "CAUSA: TRAUMA CERVICAL";
+
+    let cause_x = panel_x + panel_width.saturating_sub(text_width(cause, 2)) / 2;
+
+    draw_text(framebuffer, cause, cause_x, panel_y + 160, 2, palette::TEXT);
+
+    let options = ["ENTER / E - REINTENTAR SECTOR", "ESC - VOLVER AL TERMINAL"];
+
+    for (index, option) in options.iter().enumerate() {
+        let option_y = panel_y + panel_height + 50 + index * 44;
+
+        let option_x = width.saturating_sub(text_width(option, 2)) / 2;
+
+        let color = if index == 0 {
+            palette::SELECTED
+        } else {
+            palette::LABEL
+        };
+
+        draw_text(framebuffer, option, option_x, option_y, 2, color);
+    }
+
+    draw_scanlines(framebuffer, 3, 232);
+}
+
 pub fn render_welcome_screen(framebuffer: &mut Framebuffer) {
     let width = framebuffer.width;
     let height = framebuffer.height;
@@ -3005,10 +3082,20 @@ mod encounter_screen_tests {
         let characters_per_line = layout.text_characters_per_line(2);
 
         let mut texts: Vec<String> = SCP_173_ENCOUNTER
-            .enemy_texts
+            .enemy_turns
             .iter()
-            .map(|text| text.to_string())
+            .map(|turn| turn.text.to_string())
             .collect();
+
+        texts.push(SCP_173_ENCOUNTER.flee_response.text.to_string());
+
+        texts.push(SCP_173_ENCOUNTER.forced_response.text.to_string());
+
+        texts.push(SCP_173_ENCOUNTER.death_text.to_string());
+
+        for step in SCP_173_ENCOUNTER.forced_steps {
+            texts.push(step.to_string());
+        }
 
         for outcome in SCP_173_ENCOUNTER.outcomes {
             // El marcador de daño se sustituye por un dígito.
@@ -3044,6 +3131,27 @@ mod encounter_screen_tests {
         let lines = wrap_text("uno\n\ndos", 40);
 
         assert_eq!(lines, vec!["uno", "", "dos"]);
+    }
+
+    #[test]
+    fn the_defeat_screen_renders_and_fits() {
+        use super::render_defeat_screen;
+
+        let mut framebuffer = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        render_defeat_screen(&mut framebuffer);
+
+        assert_eq!(framebuffer.buffer.len(), WINDOW_WIDTH * WINDOW_HEIGHT);
+
+        let panel_width = WINDOW_WIDTH - 200 * 2;
+
+        assert!(text_width("SUJETO ELIMINADO", 4) <= panel_width);
+
+        assert!(text_width("CAUSA: TRAUMA CERVICAL", 2) <= panel_width);
+
+        for option in ["ENTER / E - REINTENTAR SECTOR", "ESC - VOLVER AL TERMINAL"] {
+            assert!(text_width(option, 2) <= WINDOW_WIDTH);
+        }
     }
 
     #[test]

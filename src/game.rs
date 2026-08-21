@@ -87,6 +87,7 @@ pub enum GameState {
     Paused,
     LevelTransition,
     LevelSuccess,
+    Defeat,
     Encounter,
     Victory,
 }

@@ -14,6 +14,20 @@ pub enum PlayerAction {
     MaintainGaze,
 }
 
+/// Acción con la que responde la entidad.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnemyAction {
+    Observe,
+    LethalAttack,
+}
+
+/// Respuesta de la entidad: qué hace y cómo se narra.
+#[derive(Clone, Copy, Debug)]
+pub struct EnemyTurn {
+    pub action: EnemyAction,
+    pub text: &'static str,
+}
+
 /// Momento del turno en que se encuentra el encuentro.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EncounterPhase {
@@ -22,6 +36,9 @@ pub enum EncounterPhase {
 
     /// Se muestra el resultado de la acción elegida.
     PlayerResolution,
+
+    /// El cuerpo del sujeto deja de obedecer. No se puede cancelar.
+    ForcedSequence,
 
     /// Responde la entidad.
     EnemyResolution,
@@ -36,9 +53,9 @@ impl EncounterPhase {
         match self {
             Self::PlayerChoice => "ACCIONES",
 
-            Self::PlayerResolution => "RESULTADO",
+            Self::PlayerResolution | Self::ForcedSequence => "RESULTADO",
 
-            Self::EnemyResolution => "TURNO ENEMIGO",
+            Self::EnemyResolution => "ACCIÓN ENEMIGA",
         }
     }
 }
@@ -81,9 +98,21 @@ pub struct EncounterDefinition {
     /// Resultado de cada acción del jugador.
     pub outcomes: &'static [ActionOutcome],
 
-    /// Respuesta de la entidad por turno. El último entrada se
-    /// repite en los turnos siguientes.
-    pub enemy_texts: &'static [&'static str],
+    /// Respuesta de la entidad en los turnos normales. Su longitud
+    /// define cuántos turnos hay antes de la secuencia forzada.
+    pub enemy_turns: &'static [EnemyTurn],
+
+    /// Respuesta cuando el jugador intenta huir.
+    pub flee_response: EnemyTurn,
+
+    /// Pasos de la secuencia de cansancio y parpadeo.
+    pub forced_steps: &'static [&'static str],
+
+    /// Respuesta de la entidad al terminar la secuencia forzada.
+    pub forced_response: EnemyTurn,
+
+    /// Texto que queda visible al morir.
+    pub death_text: &'static str,
 }
 
 /// Marcador sustituido por el daño en el texto de ataque.
@@ -92,6 +121,18 @@ const DAMAGE_PLACEHOLDER: &str = "{damage}";
 /// Indicación mostrada mientras se resuelve un turno.
 static CONTINUE_PROMPT: [EncounterChoice; 1] = [EncounterChoice {
     label: "CONTINUAR",
+    action: None,
+}];
+
+/// Franjas que anuncian la acción de la entidad. Ninguna es una
+/// decisión del jugador: confirmar solo avanza la resolución.
+static OBSERVE_PROMPT: [EncounterChoice; 1] = [EncounterChoice {
+    label: "OBSERVAR",
+    action: None,
+}];
+
+static ATTACK_PROMPT: [EncounterChoice; 1] = [EncounterChoice {
+    label: "ATACAR",
     action: None,
 }];
 
@@ -140,11 +181,34 @@ pub const SCP_173_ENCOUNTER: EncounterDefinition = EncounterDefinition {
             text: "Mantienes la vista fija.\n\nTus ojos comienzan a arder.",
         },
     ],
-    enemy_texts: &[
-        "La figura permanece completamente inmóvil.",
-        "Sientes cómo la extraña figura te observa atentamente.",
-        "No se mueve.\n\nEl ardor en tus ojos continúa creciendo.",
+    enemy_turns: &[
+        EnemyTurn {
+            action: EnemyAction::Observe,
+            text: "La figura permanece completamente inmóvil.",
+        },
+        EnemyTurn {
+            action: EnemyAction::Observe,
+            text: "Sientes cómo la extraña figura te observa atentamente.",
+        },
+        EnemyTurn {
+            action: EnemyAction::Observe,
+            text: "No se mueve.\n\nEl ardor en tus ojos continúa creciendo.",
+        },
     ],
+    flee_response: EnemyTurn {
+        action: EnemyAction::LethalAttack,
+        text: "Apartas la mirada al intentar huir.\n\nAlgo se mueve detrás de ti.",
+    },
+    forced_steps: &[
+        "El cansancio se ha apoderado de tu cuerpo.",
+        "Tus párpados comienzan a cerrarse.",
+        "Sin pensarlo, parpadeas.",
+    ],
+    forced_response: EnemyTurn {
+        action: EnemyAction::LethalAttack,
+        text: "Durante un instante, SCP-173 desaparece de tu vista.",
+    },
+    death_text: "CRACK.",
 };
 
 /// Detector de flanco: convierte una tecla mantenida en un único
@@ -274,6 +338,9 @@ pub enum EncounterUpdate {
 
     /// Se avanzó de fase con CONTINUAR.
     PhaseAdvanced(EncounterPhase),
+
+    /// El ataque letal se resolvió: el sujeto ha muerto.
+    PlayerDeath,
 }
 
 /// Encuentro en curso: fase, contadores, opción resaltada, texto
@@ -287,6 +354,17 @@ pub struct EncounterSession {
     attack_count: usize,
     selected_index: usize,
     current_text: String,
+
+    /// Acción con la que responde la entidad en la resolución
+    /// enemiga en curso.
+    enemy_action: Option<EnemyAction>,
+
+    /// Paso actual de la secuencia forzada.
+    forced_step: usize,
+
+    /// Última acción elegida: decide si la respuesta es letal.
+    last_action: Option<PlayerAction>,
+
     next_trigger: EdgeTrigger,
     previous_trigger: EdgeTrigger,
     confirm_trigger: EdgeTrigger,
@@ -312,6 +390,9 @@ impl EncounterSession {
             attack_count: 0,
             selected_index: 0,
             current_text,
+            enemy_action: None,
+            forced_step: 0,
+            last_action: None,
             next_trigger: EdgeTrigger::new(),
             previous_trigger: EdgeTrigger::new(),
             confirm_trigger: EdgeTrigger::new(),
@@ -359,7 +440,39 @@ impl EncounterSession {
         match self.phase {
             EncounterPhase::PlayerChoice => self.node().map(|node| node.choices).unwrap_or(&[]),
 
+            // La franja de la fase enemiga es informativa: anuncia
+            // lo que hace la entidad, no una decisión del jugador.
+            EncounterPhase::EnemyResolution => match self.enemy_action {
+                Some(EnemyAction::Observe) => &OBSERVE_PROMPT,
+
+                Some(EnemyAction::LethalAttack) => &ATTACK_PROMPT,
+
+                None => &CONTINUE_PROMPT,
+            },
+
             _ => &CONTINUE_PROMPT,
+        }
+    }
+
+    pub fn enemy_action(&self) -> Option<EnemyAction> {
+        self.enemy_action
+    }
+
+    pub fn forced_step(&self) -> usize {
+        self.forced_step
+    }
+
+    /// Si la muerte ya es inevitable.
+    ///
+    /// Una vez dentro de la secuencia forzada o del ataque letal, el
+    /// cierre provisional con F6 no puede cancelarla.
+    pub fn is_lethal_locked(&self) -> bool {
+        match self.phase {
+            EncounterPhase::ForcedSequence => true,
+
+            EncounterPhase::EnemyResolution => self.enemy_action == Some(EnemyAction::LethalAttack),
+
+            _ => false,
         }
     }
 
@@ -423,16 +536,33 @@ impl EncounterSession {
         }
     }
 
-    /// Respuesta de la entidad en el turno indicado. A partir del
-    /// último texto definido, se repite.
-    fn enemy_text(&self, turn: usize) -> String {
-        let texts = self.definition.enemy_texts;
+    /// Entra en la fase enemiga con la respuesta indicada.
+    fn begin_enemy_turn(&mut self, turn: EnemyTurn) {
+        self.phase = EncounterPhase::EnemyResolution;
 
-        texts
-            .get(turn.saturating_sub(1))
-            .or(texts.last())
+        self.enemy_action = Some(turn.action);
+
+        self.current_text = turn.text.to_string();
+
+        self.selected_index = 0;
+    }
+
+    /// Entra en la secuencia de cansancio y parpadeo.
+    fn begin_forced_sequence(&mut self) {
+        self.phase = EncounterPhase::ForcedSequence;
+
+        self.enemy_action = None;
+
+        self.forced_step = 0;
+
+        self.current_text = self
+            .definition
+            .forced_steps
+            .first()
             .map(|text| text.to_string())
-            .unwrap_or_default()
+            .unwrap_or_default();
+
+        self.selected_index = 0;
     }
 
     /// Resuelve la acción elegida y pasa a mostrar su resultado.
@@ -446,7 +576,11 @@ impl EncounterSession {
             self.attack_count += 1;
         }
 
+        self.last_action = Some(action);
+
         self.phase = EncounterPhase::PlayerResolution;
+
+        self.enemy_action = None;
 
         self.selected_index = 0;
     }
@@ -508,17 +642,50 @@ impl EncounterSession {
             }
 
             EncounterPhase::PlayerResolution => {
-                self.phase = EncounterPhase::EnemyResolution;
+                // Apartar la mirada para huir es letal de inmediato.
+                if self.last_action == Some(PlayerAction::Flee) {
+                    self.begin_enemy_turn(self.definition.flee_response);
 
-                self.current_text = self.enemy_text(self.turn_count);
+                    return EncounterUpdate::PhaseAdvanced(self.phase);
+                }
 
-                self.selected_index = 0;
+                // La cantidad de turnos normales la define el propio
+                // catálogo de respuestas de la entidad.
+                match self.definition.enemy_turns.get(self.turn_count - 1) {
+                    Some(turn) => self.begin_enemy_turn(*turn),
+
+                    // Agotados los turnos normales, el cuerpo cede.
+                    None => self.begin_forced_sequence(),
+                }
+
+                EncounterUpdate::PhaseAdvanced(self.phase)
+            }
+
+            EncounterPhase::ForcedSequence => {
+                self.forced_step += 1;
+
+                match self.definition.forced_steps.get(self.forced_step) {
+                    Some(text) => {
+                        self.current_text = text.to_string();
+                    }
+
+                    // Tras el último paso llega el ataque letal.
+                    None => self.begin_enemy_turn(self.definition.forced_response),
+                }
 
                 EncounterUpdate::PhaseAdvanced(self.phase)
             }
 
             EncounterPhase::EnemyResolution => {
+                if self.enemy_action == Some(EnemyAction::LethalAttack) {
+                    self.current_text = self.definition.death_text.to_string();
+
+                    return EncounterUpdate::PlayerDeath;
+                }
+
                 self.phase = EncounterPhase::PlayerChoice;
+
+                self.enemy_action = None;
 
                 self.selected_index = 0;
 
@@ -651,7 +818,9 @@ mod tests {
     fn attacking_alternates_zero_and_one_damage() {
         let mut session = session();
 
-        let expected = [0, 1, 0, 1, 0, 1];
+        // Solo hay tres turnos normales: el cuarto entra en la
+        // secuencia forzada, que ya cubre `lethal_tests`.
+        let expected = [0, 1, 0];
 
         for (turn, damage) in expected.iter().enumerate() {
             select(&mut session, 0);
@@ -779,9 +948,10 @@ mod tests {
 
         assert_eq!(session.choices().len(), 1);
 
-        assert_eq!(session.choices()[0].label, "CONTINUAR");
+        // La franja anuncia lo que hace la entidad.
+        assert_eq!(session.choices()[0].label, "OBSERVAR");
 
-        assert_eq!(session.actions_title(), "TURNO ENEMIGO");
+        assert_eq!(session.actions_title(), "ACCIÓN ENEMIGA");
     }
 
     #[test]
@@ -791,8 +961,6 @@ mod tests {
         let expected = [
             "La figura permanece completamente inmóvil.",
             "Sientes cómo la extraña figura te observa atentamente.",
-            "No se mueve.",
-            "No se mueve.",
             "No se mueve.",
         ];
 
@@ -820,7 +988,9 @@ mod tests {
     fn confirming_the_enemy_turn_returns_to_player_choice() {
         let mut session = session();
 
-        select(&mut session, 2);
+        // Huir es letal: para volver al turno del jugador hace falta
+        // una acción normal.
+        select(&mut session, 3);
 
         confirm_once(&mut session);
         confirm_once(&mut session);
@@ -1258,5 +1428,439 @@ mod gate_tests {
 
         assert_eq!(gate.update(NOTHING), GameplayStep::Released);
         assert_eq!(gate.update(NOTHING), GameplayStep::Running);
+    }
+}
+
+#[cfg(test)]
+mod lethal_tests {
+    use super::{
+        EncounterInput, EncounterPhase, EncounterSession, EncounterUpdate, EnemyAction,
+        PlayerAction, SCP_173_ENCOUNTER,
+    };
+
+    const RELEASED: EncounterInput = EncounterInput {
+        next_down: false,
+        previous_down: false,
+        confirm_down: false,
+    };
+
+    const CONFIRM: EncounterInput = EncounterInput {
+        next_down: false,
+        previous_down: false,
+        confirm_down: true,
+    };
+
+    const NEXT: EncounterInput = EncounterInput {
+        next_down: true,
+        previous_down: false,
+        confirm_down: false,
+    };
+
+    fn session() -> EncounterSession {
+        EncounterSession::new(SCP_173_ENCOUNTER)
+    }
+
+    fn confirm_once(session: &mut EncounterSession) -> EncounterUpdate {
+        let update = session.update(CONFIRM);
+
+        session.update(RELEASED);
+
+        update
+    }
+
+    fn select(session: &mut EncounterSession, index: usize) {
+        while session.selected_index() != index {
+            session.update(NEXT);
+
+            session.update(RELEASED);
+        }
+    }
+
+    /// Indices de las acciones en el nodo de eleccion.
+    const ATTACK: usize = 0;
+    const ITEM: usize = 1;
+    const FLEE: usize = 2;
+    const GAZE: usize = 3;
+
+    /// Juega un turno completo con una accion no letal.
+    fn play_safe_turn(session: &mut EncounterSession, index: usize) {
+        select(session, index);
+
+        confirm_once(session);
+
+        confirm_once(session);
+
+        confirm_once(session);
+    }
+
+    #[test]
+    fn the_first_three_turns_answer_with_observe() {
+        let mut session = session();
+
+        let expected = [
+            "La figura permanece completamente inmóvil.",
+            "Sientes cómo la extraña figura te observa atentamente.",
+            "No se mueve.",
+        ];
+
+        for (turn, text) in expected.iter().enumerate() {
+            select(&mut session, GAZE);
+
+            confirm_once(&mut session);
+
+            confirm_once(&mut session);
+
+            assert_eq!(session.phase(), EncounterPhase::EnemyResolution);
+
+            assert_eq!(
+                session.enemy_action(),
+                Some(EnemyAction::Observe),
+                "el turno {} no respondio con Observe",
+                turn + 1,
+            );
+
+            assert!(session.current_text().starts_with(text));
+
+            assert_eq!(session.actions_title(), "ACCIÓN ENEMIGA");
+
+            assert_eq!(session.choices().len(), 1);
+
+            assert_eq!(session.choices()[0].label, "OBSERVAR");
+
+            confirm_once(&mut session);
+        }
+    }
+
+    #[test]
+    fn observe_returns_to_player_choice_without_killing() {
+        let mut session = session();
+
+        for turn in 1..=3 {
+            select(&mut session, ITEM);
+
+            confirm_once(&mut session);
+
+            confirm_once(&mut session);
+
+            let update = confirm_once(&mut session);
+
+            assert_eq!(
+                update,
+                EncounterUpdate::PhaseAdvanced(EncounterPhase::PlayerChoice),
+                "Observe no devolvio el control en el turno {turn}",
+            );
+
+            assert_eq!(session.phase(), EncounterPhase::PlayerChoice);
+
+            assert_eq!(session.choices().len(), 4);
+        }
+    }
+
+    #[test]
+    fn fleeing_triggers_the_lethal_attack() {
+        let mut session = session();
+
+        select(&mut session, FLEE);
+
+        // La resolucion del jugador conserva su texto.
+        let update = confirm_once(&mut session);
+
+        assert_eq!(update, EncounterUpdate::ActionTaken(PlayerAction::Flee));
+
+        assert!(session.current_text().starts_with("Tus piernas se tensan."));
+
+        // Al continuar llega el ataque letal.
+        confirm_once(&mut session);
+
+        assert_eq!(session.phase(), EncounterPhase::EnemyResolution);
+
+        assert_eq!(session.enemy_action(), Some(EnemyAction::LethalAttack));
+
+        assert!(
+            session
+                .current_text()
+                .starts_with("Apartas la mirada al intentar huir.")
+        );
+
+        assert!(
+            session
+                .current_text()
+                .contains("Algo se mueve detrás de ti.")
+        );
+
+        assert_eq!(session.choices()[0].label, "ATACAR");
+    }
+
+    #[test]
+    fn confirming_the_lethal_attack_reports_the_death() {
+        let mut session = session();
+
+        select(&mut session, FLEE);
+
+        confirm_once(&mut session);
+
+        confirm_once(&mut session);
+
+        let update = confirm_once(&mut session);
+
+        assert_eq!(update, EncounterUpdate::PlayerDeath);
+
+        assert_eq!(session.current_text(), "CRACK.");
+    }
+
+    #[test]
+    fn the_fourth_turn_enters_the_forced_sequence() {
+        let mut session = session();
+
+        for _ in 0..3 {
+            play_safe_turn(&mut session, ATTACK);
+        }
+
+        assert_eq!(session.turn_count(), 3);
+
+        // Cuarta accion.
+        select(&mut session, ATTACK);
+
+        confirm_once(&mut session);
+
+        assert_eq!(session.turn_count(), 4);
+
+        assert_eq!(session.phase(), EncounterPhase::PlayerResolution);
+
+        // Al continuar ya no hay Observe.
+        confirm_once(&mut session);
+
+        assert_eq!(session.phase(), EncounterPhase::ForcedSequence);
+
+        assert_eq!(session.enemy_action(), None);
+
+        assert_eq!(session.forced_step(), 0);
+    }
+
+    #[test]
+    fn the_three_forced_texts_appear_in_order() {
+        let mut session = session();
+
+        for _ in 0..3 {
+            play_safe_turn(&mut session, ITEM);
+        }
+
+        select(&mut session, ITEM);
+
+        confirm_once(&mut session);
+
+        confirm_once(&mut session);
+
+        let expected = [
+            "El cansancio se ha apoderado de tu cuerpo.",
+            "Tus párpados comienzan a cerrarse.",
+            "Sin pensarlo, parpadeas.",
+        ];
+
+        for (step, text) in expected.iter().enumerate() {
+            assert_eq!(session.phase(), EncounterPhase::ForcedSequence);
+
+            assert_eq!(session.forced_step(), step);
+
+            assert_eq!(session.current_text(), *text);
+
+            // Cada paso solo ofrece continuar.
+            assert_eq!(session.choices().len(), 1);
+
+            assert_eq!(session.choices()[0].label, "CONTINUAR");
+
+            confirm_once(&mut session);
+        }
+    }
+
+    #[test]
+    fn a_held_confirm_does_not_skip_forced_steps() {
+        let mut session = session();
+
+        for _ in 0..3 {
+            play_safe_turn(&mut session, GAZE);
+        }
+
+        select(&mut session, GAZE);
+
+        confirm_once(&mut session);
+
+        confirm_once(&mut session);
+
+        assert_eq!(session.forced_step(), 0);
+
+        // Sostener Enter no avanza mas alla del primer paso.
+        session.update(CONFIRM);
+
+        assert_eq!(session.forced_step(), 1);
+
+        for _ in 0..60 {
+            assert_eq!(session.update(CONFIRM), EncounterUpdate::Idle);
+
+            assert_eq!(session.forced_step(), 1);
+        }
+
+        session.update(RELEASED);
+
+        session.update(CONFIRM);
+
+        assert_eq!(session.forced_step(), 2);
+    }
+
+    #[test]
+    fn the_blink_is_followed_by_the_lethal_attack() {
+        let mut session = session();
+
+        for _ in 0..3 {
+            play_safe_turn(&mut session, ATTACK);
+        }
+
+        select(&mut session, ATTACK);
+
+        confirm_once(&mut session);
+
+        confirm_once(&mut session);
+
+        // Tres pasos forzados.
+        confirm_once(&mut session);
+        confirm_once(&mut session);
+        confirm_once(&mut session);
+
+        assert_eq!(session.phase(), EncounterPhase::EnemyResolution);
+
+        assert_eq!(session.enemy_action(), Some(EnemyAction::LethalAttack));
+
+        assert_eq!(session.actions_title(), "ACCIÓN ENEMIGA");
+
+        assert_eq!(session.choices()[0].label, "ATACAR");
+
+        assert_eq!(
+            session.current_text(),
+            "Durante un instante, SCP-173 desaparece de tu vista.",
+        );
+
+        // Y confirmarlo mata al sujeto.
+        let update = confirm_once(&mut session);
+
+        assert_eq!(update, EncounterUpdate::PlayerDeath);
+
+        assert_eq!(session.current_text(), "CRACK.");
+    }
+
+    #[test]
+    fn the_encounter_can_be_closed_during_normal_phases() {
+        let mut session = session();
+
+        // Eleccion.
+        assert!(!session.is_lethal_locked());
+
+        // Resolucion del jugador.
+        select(&mut session, ATTACK);
+        confirm_once(&mut session);
+        assert_eq!(session.phase(), EncounterPhase::PlayerResolution);
+        assert!(!session.is_lethal_locked());
+
+        // Turno enemigo con Observe.
+        confirm_once(&mut session);
+        assert_eq!(session.enemy_action(), Some(EnemyAction::Observe));
+        assert!(!session.is_lethal_locked());
+    }
+
+    #[test]
+    fn the_forced_sequence_cannot_be_cancelled() {
+        let mut session = session();
+
+        for _ in 0..3 {
+            play_safe_turn(&mut session, ATTACK);
+        }
+
+        select(&mut session, ATTACK);
+        confirm_once(&mut session);
+        confirm_once(&mut session);
+
+        // Los tres pasos estan bloqueados.
+        for _ in 0..3 {
+            assert_eq!(session.phase(), EncounterPhase::ForcedSequence);
+
+            assert!(
+                session.is_lethal_locked(),
+                "la secuencia forzada deberia estar bloqueada",
+            );
+
+            confirm_once(&mut session);
+        }
+
+        // Y el ataque letal tambien.
+        assert!(session.is_lethal_locked());
+    }
+
+    #[test]
+    fn the_lethal_attack_from_fleeing_cannot_be_cancelled() {
+        let mut session = session();
+
+        select(&mut session, FLEE);
+
+        confirm_once(&mut session);
+
+        // La resolucion del jugador todavia se puede abandonar.
+        assert!(!session.is_lethal_locked());
+
+        confirm_once(&mut session);
+
+        assert!(session.is_lethal_locked());
+    }
+
+    #[test]
+    fn there_is_no_victory_outcome() {
+        // El unico desenlace del encuentro es la muerte: ninguna
+        // accion devuelve algo distinto de avance o muerte.
+        let mut session = session();
+
+        let mut updates = Vec::new();
+
+        for _ in 0..40 {
+            let update = session.update(CONFIRM);
+
+            session.update(RELEASED);
+
+            updates.push(update);
+
+            if update == EncounterUpdate::PlayerDeath {
+                break;
+            }
+        }
+
+        assert!(
+            updates.contains(&EncounterUpdate::PlayerDeath),
+            "el encuentro nunca termino en muerte",
+        );
+
+        // Y nada indica una victoria: tras morir, el texto es CRACK.
+        assert_eq!(session.current_text(), "CRACK.");
+    }
+
+    #[test]
+    fn a_fresh_session_resets_the_whole_encounter() {
+        let mut session = session();
+
+        for _ in 0..3 {
+            play_safe_turn(&mut session, ATTACK);
+        }
+
+        assert_eq!(session.turn_count(), 3);
+
+        assert_eq!(session.attack_count(), 3);
+
+        // Reintentar crea una sesion limpia.
+        let fresh = EncounterSession::new(SCP_173_ENCOUNTER);
+
+        assert_eq!(fresh.phase(), EncounterPhase::PlayerChoice);
+        assert_eq!(fresh.turn_count(), 0);
+        assert_eq!(fresh.attack_count(), 0);
+        assert_eq!(fresh.forced_step(), 0);
+        assert_eq!(fresh.enemy_action(), None);
+        assert_eq!(fresh.selected_index(), 0);
+        assert!(!fresh.is_lethal_locked());
+        assert_eq!(fresh.choices().len(), 4);
     }
 }
