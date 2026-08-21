@@ -68,17 +68,38 @@ const HORIZON_COLOR: u32 = 0x0B0D0C;
 /// Luz que conserva la escena congelada tras el panel de encuentro.
 const ENCOUNTER_OVERLAY_LIGHT: u32 = 70;
 
-/// Renglones de texto que caben en el panel de encuentro.
-const ENCOUNTER_MAX_TEXT_LINES: usize = 4;
+/// Márgenes del marco exterior del encuentro.
+const ENCOUNTER_FRAME_MARGIN_X: usize = 40;
+const ENCOUNTER_FRAME_MARGIN_BOTTOM: usize = 40;
+const ENCOUNTER_FRAME_HEIGHT: usize = 340;
 
-/// Desplazamiento del primer renglón respecto al borde del panel.
-const ENCOUNTER_TEXT_TOP: usize = 88;
+/// Aire entre el marco exterior y los paneles internos.
+const ENCOUNTER_FRAME_PADDING: usize = 16;
+
+/// Separación entre el panel de texto y el de acciones.
+const ENCOUNTER_PANEL_GAP: usize = 14;
+
+/// Reparto horizontal. La referencia pide ~72/28, pero el panel de
+/// acciones necesita algo más de ancho para que "MANTENER LA MIRADA"
+/// quepa a escala legible dentro de su franja.
+const ENCOUNTER_LEFT_PANEL_PERCENT: usize = 68;
+
+/// Franja inferior común a los dos paneles.
+const ENCOUNTER_FOOTER_HEIGHT: usize = 30;
+
+/// Renglones de texto visibles en el panel izquierdo. Ese panel
+/// servirá luego como registro de turnos.
+const ENCOUNTER_MAX_TEXT_LINES: usize = 6;
 
 /// Separación vertical entre renglones de texto.
 const ENCOUNTER_LINE_HEIGHT: usize = 24;
 
-/// Alto reservado a cada opción.
-const ENCOUNTER_OPTION_HEIGHT: usize = 34;
+/// Alto de la franja de cada acción y separación entre ellas.
+const ENCOUNTER_OPTION_BAND_HEIGHT: usize = 38;
+const ENCOUNTER_OPTION_STEP: usize = 40;
+
+/// Relleno vino oscuro de la acción resaltada.
+const ENCOUNTER_SELECTION_FILL: u32 = 0x3A1E14;
 
 /// Datos de una fila de pantalla que solo dependen de su altura.
 ///
@@ -1323,6 +1344,99 @@ fn wrap_text(text: &str, max_characters: usize) -> Vec<String> {
 ///
 /// Recibe únicamente datos: el nombre de la entidad, el texto y las
 /// etiquetas. La narrativa vive en `encounter`, no aquí.
+/// Geometría de la composición del encuentro.
+///
+/// Se calcula aparte para que el dibujo y las pruebas de layout
+/// partan exactamente de los mismos números.
+#[derive(Clone, Copy, Debug)]
+pub struct EncounterLayout {
+    pub frame_x: usize,
+    pub frame_y: usize,
+    pub frame_width: usize,
+    pub frame_height: usize,
+
+    pub left_x: usize,
+    pub left_width: usize,
+
+    pub right_x: usize,
+    pub right_width: usize,
+
+    pub panels_y: usize,
+    pub panels_height: usize,
+
+    pub footer_y: usize,
+}
+
+impl EncounterLayout {
+    pub fn new(window_width: usize, window_height: usize) -> Self {
+        let frame_x = ENCOUNTER_FRAME_MARGIN_X;
+
+        let frame_width = window_width.saturating_sub(ENCOUNTER_FRAME_MARGIN_X * 2);
+
+        let frame_height = ENCOUNTER_FRAME_HEIGHT;
+
+        let frame_y = window_height.saturating_sub(frame_height + ENCOUNTER_FRAME_MARGIN_BOTTOM);
+
+        // Región interior del marco.
+        let inner_x = frame_x + ENCOUNTER_FRAME_PADDING;
+
+        let inner_width = frame_width.saturating_sub(ENCOUNTER_FRAME_PADDING * 2);
+
+        let inner_y = frame_y + ENCOUNTER_FRAME_PADDING;
+
+        let inner_height = frame_height.saturating_sub(ENCOUNTER_FRAME_PADDING * 2);
+
+        // El pie ocupa la banda inferior; los paneles, el resto.
+        let footer_y = inner_y + inner_height.saturating_sub(ENCOUNTER_FOOTER_HEIGHT);
+
+        let panels_height = inner_height
+            .saturating_sub(ENCOUNTER_FOOTER_HEIGHT)
+            .saturating_sub(8);
+
+        // División vertical interna.
+        let available = inner_width.saturating_sub(ENCOUNTER_PANEL_GAP);
+
+        let left_width = available * ENCOUNTER_LEFT_PANEL_PERCENT / 100;
+
+        let right_width = available.saturating_sub(left_width);
+
+        Self {
+            frame_x,
+            frame_y,
+            frame_width,
+            frame_height,
+            left_x: inner_x,
+            left_width,
+            right_x: inner_x + left_width + ENCOUNTER_PANEL_GAP,
+            right_width,
+            panels_y: inner_y,
+            panels_height,
+            footer_y,
+        }
+    }
+
+    /// Caracteres que caben en un renglón del panel izquierdo.
+    pub fn text_characters_per_line(&self, scale: usize) -> usize {
+        self.left_width.saturating_sub(40) / (9 * scale)
+    }
+
+    /// Franja horizontal de una acción dentro del panel derecho.
+    pub fn option_band(&self, index: usize) -> (usize, usize, usize, usize) {
+        let band_x = self.right_x + 8;
+
+        let band_width = self.right_width.saturating_sub(16);
+
+        let band_y = self.panels_y + 42 + index * ENCOUNTER_OPTION_STEP;
+
+        (band_x, band_y, band_width, ENCOUNTER_OPTION_BAND_HEIGHT)
+    }
+}
+
+/// Composición del encuentro sobre la escena congelada.
+///
+/// Marco exterior, división vertical interna, panel izquierdo para
+/// el relato y panel derecho para las acciones, con un pie común.
+/// Recibe únicamente datos: la narrativa vive en `encounter`.
 pub fn render_encounter(
     framebuffer: &mut Framebuffer,
     entity_name: &str,
@@ -1336,56 +1450,56 @@ pub fn render_encounter(
     let height = framebuffer.height;
 
     // Oscurecer la escena congelada sin borrarla.
-    {
-        let buffer = &mut framebuffer.buffer;
-
-        for pixel in buffer.iter_mut() {
-            *pixel = scale_color_intensity(*pixel, ENCOUNTER_OVERLAY_LIGHT);
-        }
+    for pixel in framebuffer.buffer.iter_mut() {
+        *pixel = scale_color_intensity(*pixel, ENCOUNTER_OVERLAY_LIGHT);
     }
 
-    let panel_x = 60;
-    let panel_width = width.saturating_sub(panel_x * 2);
-    let panel_height = 320;
-    let panel_y = height.saturating_sub(panel_height + 40);
+    let layout = EncounterLayout::new(width, height);
 
+    // ----- Marco exterior -----
     draw_panel(
         framebuffer,
-        panel_x,
-        panel_y,
-        panel_width,
-        panel_height,
+        layout.frame_x,
+        layout.frame_y,
+        layout.frame_width,
+        layout.frame_height,
+        palette::PANEL_DEEP,
+        palette::BORDER,
+    );
+
+    // ----- Panel izquierdo: entidad y relato -----
+    draw_panel(
+        framebuffer,
+        layout.left_x,
+        layout.panels_y,
+        layout.left_width,
+        layout.panels_height,
         palette::PANEL,
         palette::BORDER,
     );
 
-    let content_x = panel_x + 32;
-    let content_width = panel_width.saturating_sub(64);
+    let left_content_x = layout.left_x + 20;
 
-    // ----- Entidad -----
     draw_text(
         framebuffer,
         entity_name,
-        content_x,
-        panel_y + 26,
+        left_content_x,
+        layout.panels_y + 18,
         2,
         palette::SELECTED,
     );
 
     draw_divider(
         framebuffer,
-        content_x,
-        panel_y + 64,
-        content_width,
+        left_content_x,
+        layout.panels_y + 46,
+        layout.left_width.saturating_sub(40),
         palette::BORDER,
     );
 
-    // ----- Texto -----
     let text_scale = 2;
 
-    let characters_per_line = content_width / (9 * text_scale);
-
-    for (index, line) in wrap_text(text, characters_per_line)
+    for (index, line) in wrap_text(text, layout.text_characters_per_line(text_scale))
         .iter()
         .take(ENCOUNTER_MAX_TEXT_LINES)
         .enumerate()
@@ -1393,36 +1507,60 @@ pub fn render_encounter(
         draw_text(
             framebuffer,
             line,
-            content_x,
-            panel_y + ENCOUNTER_TEXT_TOP + index * ENCOUNTER_LINE_HEIGHT,
+            left_content_x,
+            layout.panels_y + 62 + index * ENCOUNTER_LINE_HEIGHT,
             text_scale,
             palette::TEXT,
         );
     }
 
-    // ----- Opciones -----
-    let first_option_y =
-        panel_y + ENCOUNTER_TEXT_TOP + ENCOUNTER_MAX_TEXT_LINES * ENCOUNTER_LINE_HEIGHT + 10;
+    // ----- Panel derecho: acciones -----
+    draw_panel(
+        framebuffer,
+        layout.right_x,
+        layout.panels_y,
+        layout.right_width,
+        layout.panels_height,
+        palette::PANEL,
+        palette::BORDER,
+    );
+
+    let right_content_x = layout.right_x + 12;
+
+    draw_text(
+        framebuffer,
+        "ACCIONES",
+        right_content_x,
+        layout.panels_y + 16,
+        1,
+        palette::LABEL,
+    );
+
+    draw_divider(
+        framebuffer,
+        right_content_x,
+        layout.panels_y + 32,
+        layout.right_width.saturating_sub(24),
+        palette::BORDER,
+    );
 
     for (index, choice) in choices.iter().enumerate() {
-        let option_y = first_option_y + index * ENCOUNTER_OPTION_HEIGHT;
+        let (band_x, band_y, band_width, band_height) = layout.option_band(index);
 
         let is_selected = index == selected_index;
 
+        // La selección es una franja completa, no solo un marcador.
         if is_selected {
-            // Realce del renglón elegido.
             draw_panel(
                 framebuffer,
-                content_x,
-                option_y - 6,
-                content_width,
-                ENCOUNTER_OPTION_HEIGHT - 6,
-                0x1B1710,
+                band_x,
+                band_y,
+                band_width,
+                band_height,
+                ENCOUNTER_SELECTION_FILL,
                 palette::SELECTED,
             );
         }
-
-        let marker = if is_selected { ">" } else { " " };
 
         let color = if is_selected {
             palette::SELECTED
@@ -1432,13 +1570,25 @@ pub fn render_encounter(
 
         draw_text(
             framebuffer,
-            &format!("{marker} {}", choice.label),
-            content_x + 16,
-            option_y,
+            choice.label,
+            band_x + 10,
+            band_y + (band_height.saturating_sub(16)) / 2,
             2,
             color,
         );
     }
+
+    // ----- Pie común -----
+    draw_divider(
+        framebuffer,
+        layout.left_x,
+        layout.footer_y,
+        layout
+            .right_x
+            .saturating_add(layout.right_width)
+            .saturating_sub(layout.left_x),
+        palette::BORDER,
+    );
 
     let keys = "W / S - ELEGIR    ENTER / E - CONFIRMAR    F6 - CERRAR";
 
@@ -1448,7 +1598,7 @@ pub fn render_encounter(
         framebuffer,
         keys,
         keys_x,
-        panel_y + panel_height - 24,
+        layout.footer_y + 12,
         1,
         palette::LABEL,
     );
@@ -2674,40 +2824,196 @@ mod plane_casting_tests {
 #[cfg(test)]
 mod encounter_screen_tests {
     use super::{
-        ENCOUNTER_LINE_HEIGHT, ENCOUNTER_MAX_TEXT_LINES, ENCOUNTER_OPTION_HEIGHT,
-        ENCOUNTER_TEXT_TOP, render_encounter, text_width, wrap_text,
+        ENCOUNTER_LINE_HEIGHT, ENCOUNTER_MAX_TEXT_LINES, EncounterLayout, render_encounter,
+        text_width, wrap_text,
     };
-    use crate::encounter::{DEMO_ENCOUNTER, EncounterSession};
+    use crate::encounter::{DEMO_ENCOUNTER, EncounterChoice, EncounterSession};
     use crate::framebuffer::Framebuffer;
 
     const WINDOW_WIDTH: usize = 1300;
     const WINDOW_HEIGHT: usize = 900;
 
-    // Mismas medidas que usa `render_encounter`.
-    const PANEL_X: usize = 60;
-    const PANEL_HEIGHT: usize = 320;
-
-    fn panel_width() -> usize {
-        WINDOW_WIDTH - PANEL_X * 2
+    fn layout() -> EncounterLayout {
+        EncounterLayout::new(WINDOW_WIDTH, WINDOW_HEIGHT)
     }
 
-    fn panel_y() -> usize {
-        WINDOW_HEIGHT - (PANEL_HEIGHT + 40)
+    fn demo_choices() -> &'static [EncounterChoice] {
+        DEMO_ENCOUNTER.nodes[0].choices
+    }
+
+    #[test]
+    fn the_frame_fits_inside_the_window() {
+        let layout = layout();
+
+        assert!(layout.frame_x + layout.frame_width <= WINDOW_WIDTH);
+
+        assert!(layout.frame_y + layout.frame_height <= WINDOW_HEIGHT);
+
+        // Y deja margen visible arriba y a los lados.
+        assert!(layout.frame_x > 0);
+
+        assert!(layout.frame_y > 0);
+    }
+
+    #[test]
+    fn the_internal_split_stays_inside_the_frame() {
+        let layout = layout();
+
+        let frame_right = layout.frame_x + layout.frame_width;
+
+        let frame_bottom = layout.frame_y + layout.frame_height;
+
+        // El panel izquierdo empieza dentro del marco.
+        assert!(layout.left_x > layout.frame_x);
+
+        // No se solapan y queda separación entre ambos.
+        assert!(layout.left_x + layout.left_width < layout.right_x);
+
+        // El panel derecho termina dentro del marco.
+        assert!(layout.right_x + layout.right_width < frame_right);
+
+        // Paneles y pie caben verticalmente.
+        assert!(layout.panels_y + layout.panels_height <= layout.footer_y);
+
+        assert!(layout.footer_y < frame_bottom);
+    }
+
+    #[test]
+    fn the_left_panel_is_the_larger_one() {
+        let layout = layout();
+
+        assert!(
+            layout.left_width > layout.right_width * 2,
+            "izquierda {} contra derecha {}",
+            layout.left_width,
+            layout.right_width,
+        );
+    }
+
+    #[test]
+    fn the_four_actions_fit_without_overlapping() {
+        let layout = layout();
+
+        let choices = demo_choices();
+
+        assert_eq!(choices.len(), 4, "la demo debe ofrecer cuatro acciones");
+
+        let mut previous_bottom = layout.panels_y;
+
+        for index in 0..choices.len() {
+            let (_, band_y, _, band_height) = layout.option_band(index);
+
+            assert!(
+                band_y >= previous_bottom,
+                "la accion {index} se solapa con la anterior",
+            );
+
+            previous_bottom = band_y + band_height;
+        }
+
+        // La ultima franja sigue dentro del panel derecho.
+        assert!(previous_bottom <= layout.panels_y + layout.panels_height);
+    }
+
+    #[test]
+    fn the_last_action_does_not_touch_the_footer() {
+        let layout = layout();
+
+        let last = demo_choices().len() - 1;
+
+        let (_, band_y, _, band_height) = layout.option_band(last);
+
+        let band_bottom = band_y + band_height;
+
+        assert!(
+            band_bottom < layout.footer_y,
+            "la ultima accion llega a {band_bottom} y el pie empieza en {}",
+            layout.footer_y,
+        );
+    }
+
+    #[test]
+    fn every_action_label_fits_inside_its_band() {
+        let layout = layout();
+
+        for (index, choice) in demo_choices().iter().enumerate() {
+            let (_, _, band_width, _) = layout.option_band(index);
+
+            // 10 px de sangria a la izquierda del rotulo.
+            let needed = text_width(choice.label, 2) + 10;
+
+            assert!(
+                needed <= band_width,
+                "el rotulo {} necesita {needed} px y la franja mide {band_width}",
+                choice.label,
+            );
+        }
+    }
+
+    #[test]
+    fn the_selection_band_stays_inside_the_right_panel() {
+        let layout = layout();
+
+        for index in 0..demo_choices().len() {
+            let (band_x, band_y, band_width, band_height) = layout.option_band(index);
+
+            assert!(band_x >= layout.right_x);
+
+            assert!(band_x + band_width <= layout.right_x + layout.right_width);
+
+            assert!(band_y >= layout.panels_y);
+
+            assert!(band_y + band_height <= layout.panels_y + layout.panels_height);
+        }
+    }
+
+    #[test]
+    fn a_long_text_fits_in_the_left_panel() {
+        let layout = layout();
+
+        let characters_per_line = layout.text_characters_per_line(2);
+
+        let lines = wrap_text(DEMO_ENCOUNTER.nodes[0].text, characters_per_line);
+
+        assert!(
+            lines.len() <= ENCOUNTER_MAX_TEXT_LINES,
+            "el relato necesita {} renglones y caben {ENCOUNTER_MAX_TEXT_LINES}",
+            lines.len(),
+        );
+
+        // Ningun renglon se sale del panel.
+        for line in &lines {
+            assert!(text_width(line, 2) + 40 <= layout.left_width);
+        }
+
+        // El bloque completo cabe por encima del pie.
+        let text_bottom = layout.panels_y + 62 + ENCOUNTER_MAX_TEXT_LINES * ENCOUNTER_LINE_HEIGHT;
+
+        assert!(text_bottom <= layout.panels_y + layout.panels_height);
+    }
+
+    #[test]
+    fn the_entity_name_and_footer_fit() {
+        let layout = layout();
+
+        assert!(text_width(DEMO_ENCOUNTER.entity_name, 2) + 40 <= layout.left_width);
+
+        let keys = "W / S - ELEGIR    ENTER / E - CONFIRMAR    F6 - CERRAR";
+
+        assert!(text_width(keys, 1) <= WINDOW_WIDTH);
     }
 
     #[test]
     fn wrapping_splits_on_words_without_exceeding_the_width() {
         let text = "La figura permanece inmovil al final del corredor y no parpadea";
 
-        for max in [10, 20, 32, 61] {
+        for max in [10, 20, 32, 44] {
             for line in wrap_text(text, max) {
                 let length = line.chars().count();
 
-                // Solo una palabra más larga que el ancho puede
-                // exceder, y entonces va sola en su renglón.
                 assert!(
                     length <= max || !line.contains(' '),
-                    "renglón de {length} caracteres con ancho {max}: {line}",
+                    "renglon de {length} caracteres con ancho {max}: {line}",
                 );
             }
         }
@@ -2719,14 +3025,14 @@ mod encounter_screen_tests {
 
         let original: Vec<&str> = text.split_whitespace().collect();
 
-        let wrapped: Vec<String> = wrap_text(text, 61);
+        let lines = wrap_text(text, 44);
 
-        let rebuilt: Vec<&str> = wrapped
+        let rebuilt: Vec<&str> = lines
             .iter()
             .flat_map(|line| line.split_whitespace())
             .collect();
 
-        assert_eq!(rebuilt, original, "el ajuste perdió o alteró palabras");
+        assert_eq!(rebuilt, original, "el ajuste perdio o altero palabras");
     }
 
     #[test]
@@ -2735,73 +3041,10 @@ mod encounter_screen_tests {
 
         assert!(!wrap_text("", 40).iter().any(|line| !line.is_empty()));
 
-        // Una palabra más larga que el ancho no se pierde.
-        let lines = wrap_text("supercalifragilistico", 5);
-
-        assert_eq!(lines, vec!["supercalifragilistico"]);
-    }
-
-    #[test]
-    fn the_demo_text_fits_in_the_available_lines() {
-        let content_width = panel_width() - 64;
-
-        let characters_per_line = content_width / (9 * 2);
-
-        let lines = wrap_text(DEMO_ENCOUNTER.nodes[0].text, characters_per_line);
-
-        assert!(
-            lines.len() <= ENCOUNTER_MAX_TEXT_LINES,
-            "el texto de prueba necesita {} renglones y solo caben {ENCOUNTER_MAX_TEXT_LINES}",
-            lines.len(),
+        assert_eq!(
+            wrap_text("supercalifragilistico", 5),
+            vec!["supercalifragilistico"],
         );
-    }
-
-    #[test]
-    fn the_panel_contents_stay_inside_the_panel() {
-        let panel_y = panel_y();
-
-        let panel_bottom = panel_y + PANEL_HEIGHT;
-
-        let first_option_y =
-            panel_y + ENCOUNTER_TEXT_TOP + ENCOUNTER_MAX_TEXT_LINES * ENCOUNTER_LINE_HEIGHT + 10;
-
-        let choices = DEMO_ENCOUNTER.nodes[0].choices.len();
-
-        // Realce de la última opción.
-        let last_option_bottom = first_option_y + (choices - 1) * ENCOUNTER_OPTION_HEIGHT - 6
-            + ENCOUNTER_OPTION_HEIGHT
-            - 6;
-
-        let keys_y = panel_y + PANEL_HEIGHT - 24;
-
-        assert!(
-            last_option_bottom <= keys_y,
-            "la última opción (hasta {last_option_bottom}) pisa la línea de teclas ({keys_y})",
-        );
-
-        assert!(
-            keys_y + 8 <= panel_bottom,
-            "la línea de teclas se sale del panel",
-        );
-
-        assert!(panel_bottom <= WINDOW_HEIGHT);
-    }
-
-    #[test]
-    fn the_labels_fit_across_the_panel() {
-        let content_width = panel_width() - 64;
-
-        for choice in DEMO_ENCOUNTER.nodes[0].choices {
-            let label = format!("> {}", choice.label);
-
-            assert!(text_width(&label, 2) + 16 <= content_width);
-        }
-
-        assert!(text_width(DEMO_ENCOUNTER.entity_name, 2) <= content_width);
-
-        let keys = "W / S - ELEGIR    ENTER / E - CONFIRMAR    F6 - CERRAR";
-
-        assert!(text_width(keys, 1) <= WINDOW_WIDTH);
     }
 
     #[test]

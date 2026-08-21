@@ -42,6 +42,9 @@ pub const DEMO_ENCOUNTER: EncounterDefinition = EncounterDefinition {
             EncounterChoice { label: "ATACAR" },
             EncounterChoice { label: "OBJETO" },
             EncounterChoice { label: "HUIR" },
+            EncounterChoice {
+                label: "MANTENER LA MIRADA",
+            },
         ],
     }],
 };
@@ -320,7 +323,10 @@ mod tests {
             .map(|choice| choice.label)
             .collect();
 
-        assert_eq!(labels, vec!["ATACAR", "OBJETO", "HUIR"]);
+        assert_eq!(
+            labels,
+            vec!["ATACAR", "OBJETO", "HUIR", "MANTENER LA MIRADA"],
+        );
 
         assert_eq!(session.selected_index(), 0);
 
@@ -342,20 +348,23 @@ mod tests {
     fn the_selection_wraps_in_both_directions() {
         let mut session = session();
 
+        let last = session.choices().len() - 1;
+
         // Del último vuelve al primero.
-        session.select_next();
-        session.select_next();
-        assert_eq!(session.selected_index(), 2);
+        for _ in 0..last {
+            session.select_next();
+        }
+        assert_eq!(session.selected_index(), last);
 
         session.select_next();
         assert_eq!(session.selected_index(), 0);
 
         // Y hacia atrás desde el primero llega al último.
         session.select_previous();
-        assert_eq!(session.selected_index(), 2);
+        assert_eq!(session.selected_index(), last);
 
         session.select_previous();
-        assert_eq!(session.selected_index(), 1);
+        assert_eq!(session.selected_index(), last - 1);
     }
 
     #[test]
