@@ -1,6 +1,7 @@
 mod audio;
 mod caster;
 mod encounter;
+mod encounter_trigger;
 mod framebuffer;
 mod game;
 mod maze;
@@ -19,6 +20,9 @@ use crate::audio::{AudioManager, should_play_crack};
 use crate::encounter::{
     EdgeTrigger, EncounterInput, EncounterSession, EncounterUpdate, GameplayGate, GameplayStep,
     SCP_173_ENCOUNTER,
+};
+use crate::encounter_trigger::{
+    EncounterOrigin, ProximityEncounterTrigger, can_close_debug_encounter, scp_173_trigger_enabled,
 };
 use crate::framebuffer::Framebuffer;
 use crate::game::{
@@ -43,6 +47,9 @@ const BLOCK_SIZE: usize = 100;
 const FOV: f32 = PI / 3.0;
 
 const LEVEL_TRANSITION_DURATION: f32 = 4.5;
+
+/// Radio, en celdas, al que SCP-173 provoca el encuentro.
+const SCP_173_TRIGGER_RADIUS_CELLS: f32 = 1.25;
 
 fn main() {
     let window_width = 1300;
@@ -149,6 +156,12 @@ fn main() {
     // volver al mundo. Servirá igual para ReturnToWorld.
     let mut gameplay_gate = GameplayGate::new();
 
+    // Abre el encuentro cuando SCP-173 se acerca lo suficiente.
+    let mut scp_173_trigger = ProximityEncounterTrigger::new(SCP_173_TRIGGER_RADIUS_CELLS);
+
+    // Solo F6 puede retirar lo que F6 abrió.
+    let mut encounter_origin: Option<EncounterOrigin> = None;
+
     while window.is_open() {
         let frame_start = Instant::now();
 
@@ -221,6 +234,12 @@ fn main() {
                         player = selected_player;
                         scp_173.reset();
 
+                        // Intento nuevo: el encuentro vuelve a estar
+                        // pendiente.
+                        scp_173_trigger.reset();
+
+                        encounter_origin = None;
+
                         game_state = GameState::Playing;
 
                         enter_locked = true;
@@ -268,6 +287,10 @@ fn main() {
                             game_state = GameState::LevelSelection;
 
                             level_selection_menu = LevelSelectionMenu::new();
+
+                            scp_173_trigger.reset();
+
+                            encounter_origin = None;
                         }
                     }
                 }
@@ -276,9 +299,11 @@ fn main() {
             GameState::Playing => {
                 if window.is_key_pressed(Key::Escape, KeyRepeat::No) {
                     game_state.toggle_pause();
-                } else if window.is_key_pressed(Key::F6, KeyRepeat::No) {
-                    // Apertura provisional del encuentro de demostración.
+                } else if cfg!(debug_assertions) && window.is_key_pressed(Key::F6, KeyRepeat::No) {
+                    // Herramienta de depuración: no existe en release.
                     game_state = GameState::Encounter;
+
+                    encounter_origin = Some(EncounterOrigin::Debug);
 
                     encounter_session = EncounterSession::new(SCP_173_ENCOUNTER);
 
@@ -297,6 +322,10 @@ fn main() {
 
                     encounter_session = EncounterSession::new(SCP_173_ENCOUNTER);
 
+                    scp_173_trigger.reset();
+
+                    encounter_origin = None;
+
                     // Un impacto largo no debe invadir el terminal.
                     if let Some(audio) = audio.as_mut() {
                         audio.stop_crack();
@@ -312,6 +341,10 @@ fn main() {
                     maze = retry_maze;
                     player = retry_player;
                     scp_173.reset();
+
+                    scp_173_trigger.reset();
+
+                    encounter_origin = None;
 
                     encounter_session = EncounterSession::new(SCP_173_ENCOUNTER);
 
@@ -342,14 +375,28 @@ fn main() {
             }
 
             GameState::Encounter => {
-                if window.is_key_pressed(Key::F6, KeyRepeat::No)
-                    && !encounter_session.is_lethal_locked()
+                // F6 solo retira lo que F6 abrió, y nunca una vez
+                // comprometida la muerte. El trigger no se rearma:
+                // el encuentro automático sigue pendiente.
+                if cfg!(debug_assertions)
+                    && window.is_key_pressed(Key::F6, KeyRepeat::No)
+                    && can_close_debug_encounter(
+                        encounter_origin,
+                        encounter_session.is_lethal_locked(),
+                    )
                 {
                     game_state = GameState::Playing;
+
+                    encounter_origin = None;
 
                     // El gameplay no se reanuda aquí: la compuerta lo
                     // retiene hasta que se suelten las teclas.
                     gameplay_gate.arm();
+
+                    println!(
+                        "Encuentro de depuración cerrado. Trigger automático pendiente: {}",
+                        !scp_173_trigger.has_fired(),
+                    );
                 } else {
                     let update = encounter_session.update(encounter_input);
 
@@ -441,6 +488,10 @@ fn main() {
                             maze = first_level_maze;
                             player = first_level_player;
                             scp_173.reset();
+
+                            scp_173_trigger.reset();
+
+                            encounter_origin = None;
 
                             game_state = GameState::Welcome;
 
@@ -559,24 +610,46 @@ fn main() {
                 scp_173.update(&maze, &player, BLOCK_SIZE, scp_173_observed, delta_time);
             }
 
-            let map_x = player.pos.x as usize / BLOCK_SIZE;
+            // Se evalúa después de mover a ambos, con las posiciones
+            // ya definitivas de este frame.
+            let encounter_triggered = scp_173_trigger_enabled(game_session.current_level_number())
+                && scp_173_trigger.update(&maze, &player, scp_173.pos, BLOCK_SIZE);
 
-            let map_y = player.pos.y as usize / BLOCK_SIZE;
+            if encounter_triggered {
+                game_state = GameState::Encounter;
 
-            let current_cell = maze.get(map_y).and_then(|row| row.get(map_x)).copied();
+                encounter_origin = Some(EncounterOrigin::Proximity);
 
-            if matches!(current_cell, Some('g' | 'G')) {
-                // Pisar la meta abre el informe; no avanza de nivel
-                // por su cuenta. El avance lo confirma el jugador.
-                game_state = state_after_reaching_goal();
+                encounter_session = EncounterSession::new(SCP_173_ENCOUNTER);
 
-                level_success_option = LevelSuccessOption::default();
+                // Con el teclado tal cual está: una tecla sostenida
+                // al acercarse no debe navegar ni confirmar sola.
+                encounter_session.seed_input_state(encounter_input);
 
-                // Evita que un Enter que venga de antes confirme el
-                // informe en el mismo instante en que aparece.
-                enter_locked = true;
+                previous_frame = Instant::now();
 
-                println!("Sector completado: {}", game_session.current_level_path(),);
+                println!("Encuentro automático: SCP-173 dentro del radio.");
+            } else {
+                let map_x = player.pos.x as usize / BLOCK_SIZE;
+
+                let map_y = player.pos.y as usize / BLOCK_SIZE;
+
+                let current_cell = maze.get(map_y).and_then(|row| row.get(map_x)).copied();
+
+                if matches!(current_cell, Some('g' | 'G')) {
+                    // Pisar la meta abre el informe; no avanza de
+                    // nivel por su cuenta. El avance lo confirma el
+                    // jugador.
+                    game_state = state_after_reaching_goal();
+
+                    level_success_option = LevelSuccessOption::default();
+
+                    // Evita que un Enter que venga de antes confirme
+                    // el informe en el mismo instante en que aparece.
+                    enter_locked = true;
+
+                    println!("Sector completado: {}", game_session.current_level_path(),);
+                }
             }
         }
 
@@ -589,6 +662,11 @@ fn main() {
 
                 maze = next_maze;
                 player = next_player;
+
+                // Sector nuevo: el encuentro vuelve a estar pendiente.
+                scp_173_trigger.reset();
+
+                encounter_origin = None;
 
                 game_state = GameState::Playing;
 
