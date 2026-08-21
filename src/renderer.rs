@@ -1,4 +1,5 @@
 use crate::caster::{WallSide, cast_ray};
+use crate::encounter::EncounterChoice;
 use crate::framebuffer::Framebuffer;
 use crate::game::{
     LevelSuccessOption, VictoryMenuOption, level_count as game_level_count,
@@ -63,6 +64,21 @@ const MAX_PLANE_DISTANCE_CELLS: f32 = 24.0;
 /// Color de la fila exacta del horizonte, donde la proyección del
 /// plano es singular.
 const HORIZON_COLOR: u32 = 0x0B0D0C;
+
+/// Luz que conserva la escena congelada tras el panel de encuentro.
+const ENCOUNTER_OVERLAY_LIGHT: u32 = 70;
+
+/// Renglones de texto que caben en el panel de encuentro.
+const ENCOUNTER_MAX_TEXT_LINES: usize = 4;
+
+/// Desplazamiento del primer renglón respecto al borde del panel.
+const ENCOUNTER_TEXT_TOP: usize = 88;
+
+/// Separación vertical entre renglones de texto.
+const ENCOUNTER_LINE_HEIGHT: usize = 24;
+
+/// Alto reservado a cada opción.
+const ENCOUNTER_OPTION_HEIGHT: usize = 34;
 
 /// Datos de una fila de pantalla que solo dependen de su altura.
 ///
@@ -1263,6 +1279,179 @@ pub fn render_level_success(
     draw_terminal_footer(framebuffer, "W / S - OPCIÓN    ENTER - CONFIRMAR");
 
     draw_scanlines(framebuffer, 3, 232);
+}
+
+/// Parte un texto en líneas que quepan en `max_characters`.
+///
+/// Corta por palabras. Una palabra más larga que el ancho se deja
+/// entera en su línea antes que romperla por la mitad.
+fn wrap_text(text: &str, max_characters: usize) -> Vec<String> {
+    if max_characters == 0 {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::new();
+
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        let word_length = word.chars().count();
+
+        let current_length = current.chars().count();
+
+        if current.is_empty() {
+            current.push_str(word);
+        } else if current_length + 1 + word_length <= max_characters {
+            current.push(' ');
+
+            current.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+
+            current.push_str(word);
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    lines
+}
+
+/// Panel de encuentro sobre la escena congelada.
+///
+/// Recibe únicamente datos: el nombre de la entidad, el texto y las
+/// etiquetas. La narrativa vive en `encounter`, no aquí.
+pub fn render_encounter(
+    framebuffer: &mut Framebuffer,
+    entity_name: &str,
+    text: &str,
+    choices: &[EncounterChoice],
+    selected_index: usize,
+) {
+    use terminal_palette as palette;
+
+    let width = framebuffer.width;
+    let height = framebuffer.height;
+
+    // Oscurecer la escena congelada sin borrarla.
+    {
+        let buffer = &mut framebuffer.buffer;
+
+        for pixel in buffer.iter_mut() {
+            *pixel = scale_color_intensity(*pixel, ENCOUNTER_OVERLAY_LIGHT);
+        }
+    }
+
+    let panel_x = 60;
+    let panel_width = width.saturating_sub(panel_x * 2);
+    let panel_height = 320;
+    let panel_y = height.saturating_sub(panel_height + 40);
+
+    draw_panel(
+        framebuffer,
+        panel_x,
+        panel_y,
+        panel_width,
+        panel_height,
+        palette::PANEL,
+        palette::BORDER,
+    );
+
+    let content_x = panel_x + 32;
+    let content_width = panel_width.saturating_sub(64);
+
+    // ----- Entidad -----
+    draw_text(
+        framebuffer,
+        entity_name,
+        content_x,
+        panel_y + 26,
+        2,
+        palette::SELECTED,
+    );
+
+    draw_divider(
+        framebuffer,
+        content_x,
+        panel_y + 64,
+        content_width,
+        palette::BORDER,
+    );
+
+    // ----- Texto -----
+    let text_scale = 2;
+
+    let characters_per_line = content_width / (9 * text_scale);
+
+    for (index, line) in wrap_text(text, characters_per_line)
+        .iter()
+        .take(ENCOUNTER_MAX_TEXT_LINES)
+        .enumerate()
+    {
+        draw_text(
+            framebuffer,
+            line,
+            content_x,
+            panel_y + ENCOUNTER_TEXT_TOP + index * ENCOUNTER_LINE_HEIGHT,
+            text_scale,
+            palette::TEXT,
+        );
+    }
+
+    // ----- Opciones -----
+    let first_option_y =
+        panel_y + ENCOUNTER_TEXT_TOP + ENCOUNTER_MAX_TEXT_LINES * ENCOUNTER_LINE_HEIGHT + 10;
+
+    for (index, choice) in choices.iter().enumerate() {
+        let option_y = first_option_y + index * ENCOUNTER_OPTION_HEIGHT;
+
+        let is_selected = index == selected_index;
+
+        if is_selected {
+            // Realce del renglón elegido.
+            draw_panel(
+                framebuffer,
+                content_x,
+                option_y - 6,
+                content_width,
+                ENCOUNTER_OPTION_HEIGHT - 6,
+                0x1B1710,
+                palette::SELECTED,
+            );
+        }
+
+        let marker = if is_selected { ">" } else { " " };
+
+        let color = if is_selected {
+            palette::SELECTED
+        } else {
+            palette::TEXT_DIM
+        };
+
+        draw_text(
+            framebuffer,
+            &format!("{marker} {}", choice.label),
+            content_x + 16,
+            option_y,
+            2,
+            color,
+        );
+    }
+
+    let keys = "W / S - ELEGIR    ENTER / E - CONFIRMAR    F6 - CERRAR";
+
+    let keys_x = width.saturating_sub(text_width(keys, 1)) / 2;
+
+    draw_text(
+        framebuffer,
+        keys,
+        keys_x,
+        panel_y + panel_height - 24,
+        1,
+        palette::LABEL,
+    );
 }
 
 pub fn render_welcome_screen(framebuffer: &mut Framebuffer) {
@@ -2479,5 +2668,162 @@ mod plane_casting_tests {
 
         // El techo siempre algo más apagado que el suelo.
         assert!(far_from_horizon.ceiling_light < far_from_horizon.floor_light);
+    }
+}
+
+#[cfg(test)]
+mod encounter_screen_tests {
+    use super::{
+        ENCOUNTER_LINE_HEIGHT, ENCOUNTER_MAX_TEXT_LINES, ENCOUNTER_OPTION_HEIGHT,
+        ENCOUNTER_TEXT_TOP, render_encounter, text_width, wrap_text,
+    };
+    use crate::encounter::{DEMO_ENCOUNTER, EncounterSession};
+    use crate::framebuffer::Framebuffer;
+
+    const WINDOW_WIDTH: usize = 1300;
+    const WINDOW_HEIGHT: usize = 900;
+
+    // Mismas medidas que usa `render_encounter`.
+    const PANEL_X: usize = 60;
+    const PANEL_HEIGHT: usize = 320;
+
+    fn panel_width() -> usize {
+        WINDOW_WIDTH - PANEL_X * 2
+    }
+
+    fn panel_y() -> usize {
+        WINDOW_HEIGHT - (PANEL_HEIGHT + 40)
+    }
+
+    #[test]
+    fn wrapping_splits_on_words_without_exceeding_the_width() {
+        let text = "La figura permanece inmovil al final del corredor y no parpadea";
+
+        for max in [10, 20, 32, 61] {
+            for line in wrap_text(text, max) {
+                let length = line.chars().count();
+
+                // Solo una palabra más larga que el ancho puede
+                // exceder, y entonces va sola en su renglón.
+                assert!(
+                    length <= max || !line.contains(' '),
+                    "renglón de {length} caracteres con ancho {max}: {line}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn wrapping_keeps_every_word() {
+        let text = DEMO_ENCOUNTER.nodes[0].text;
+
+        let original: Vec<&str> = text.split_whitespace().collect();
+
+        let wrapped: Vec<String> = wrap_text(text, 61);
+
+        let rebuilt: Vec<&str> = wrapped
+            .iter()
+            .flat_map(|line| line.split_whitespace())
+            .collect();
+
+        assert_eq!(rebuilt, original, "el ajuste perdió o alteró palabras");
+    }
+
+    #[test]
+    fn wrapping_handles_degenerate_widths() {
+        assert!(wrap_text("hola mundo", 0).is_empty());
+
+        assert!(!wrap_text("", 40).iter().any(|line| !line.is_empty()));
+
+        // Una palabra más larga que el ancho no se pierde.
+        let lines = wrap_text("supercalifragilistico", 5);
+
+        assert_eq!(lines, vec!["supercalifragilistico"]);
+    }
+
+    #[test]
+    fn the_demo_text_fits_in_the_available_lines() {
+        let content_width = panel_width() - 64;
+
+        let characters_per_line = content_width / (9 * 2);
+
+        let lines = wrap_text(DEMO_ENCOUNTER.nodes[0].text, characters_per_line);
+
+        assert!(
+            lines.len() <= ENCOUNTER_MAX_TEXT_LINES,
+            "el texto de prueba necesita {} renglones y solo caben {ENCOUNTER_MAX_TEXT_LINES}",
+            lines.len(),
+        );
+    }
+
+    #[test]
+    fn the_panel_contents_stay_inside_the_panel() {
+        let panel_y = panel_y();
+
+        let panel_bottom = panel_y + PANEL_HEIGHT;
+
+        let first_option_y =
+            panel_y + ENCOUNTER_TEXT_TOP + ENCOUNTER_MAX_TEXT_LINES * ENCOUNTER_LINE_HEIGHT + 10;
+
+        let choices = DEMO_ENCOUNTER.nodes[0].choices.len();
+
+        // Realce de la última opción.
+        let last_option_bottom = first_option_y + (choices - 1) * ENCOUNTER_OPTION_HEIGHT - 6
+            + ENCOUNTER_OPTION_HEIGHT
+            - 6;
+
+        let keys_y = panel_y + PANEL_HEIGHT - 24;
+
+        assert!(
+            last_option_bottom <= keys_y,
+            "la última opción (hasta {last_option_bottom}) pisa la línea de teclas ({keys_y})",
+        );
+
+        assert!(
+            keys_y + 8 <= panel_bottom,
+            "la línea de teclas se sale del panel",
+        );
+
+        assert!(panel_bottom <= WINDOW_HEIGHT);
+    }
+
+    #[test]
+    fn the_labels_fit_across_the_panel() {
+        let content_width = panel_width() - 64;
+
+        for choice in DEMO_ENCOUNTER.nodes[0].choices {
+            let label = format!("> {}", choice.label);
+
+            assert!(text_width(&label, 2) + 16 <= content_width);
+        }
+
+        assert!(text_width(DEMO_ENCOUNTER.entity_name, 2) <= content_width);
+
+        let keys = "W / S - ELEGIR    ENTER / E - CONFIRMAR    F6 - CERRAR";
+
+        assert!(text_width(keys, 1) <= WINDOW_WIDTH);
+    }
+
+    #[test]
+    fn the_encounter_renders_for_every_selection() {
+        let mut framebuffer = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        let mut session = EncounterSession::new(DEMO_ENCOUNTER);
+
+        let text = session.node().expect("el nodo debe existir").text;
+
+        for _ in 0..session.choices().len() {
+            render_encounter(
+                &mut framebuffer,
+                session.entity_name(),
+                text,
+                session.choices(),
+                session.selected_index(),
+            );
+
+            session.select_next();
+        }
+
+        assert_eq!(framebuffer.buffer.len(), WINDOW_WIDTH * WINDOW_HEIGHT);
     }
 }

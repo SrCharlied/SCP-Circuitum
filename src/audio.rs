@@ -52,6 +52,7 @@ fn music_belongs_to(state: GameState) -> bool {
             | GameState::Paused
             | GameState::LevelTransition
             | GameState::LevelSuccess
+            | GameState::Encounter
     )
 }
 

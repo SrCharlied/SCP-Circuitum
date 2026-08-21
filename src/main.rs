@@ -1,5 +1,6 @@
 mod audio;
 mod caster;
+mod encounter;
 mod framebuffer;
 mod game;
 mod maze;
@@ -15,6 +16,7 @@ use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 
 use crate::audio::AudioManager;
+use crate::encounter::{DEMO_ENCOUNTER, EncounterInput, EncounterSession, EncounterUpdate};
 use crate::framebuffer::Framebuffer;
 use crate::game::{
     GameSession, GameSettings, GameState, LevelSelectionMenu, LevelSuccessOption,
@@ -24,9 +26,9 @@ use crate::maze::load_maze;
 use crate::mouse_capture::{MouseCapture, should_capture_cursor};
 use crate::player::{MouseLook, PlayerMotion, process_events};
 use crate::renderer::{
-    PlaneTable, WorldSprite, draw_text, render_3d, render_level_selection, render_level_success,
-    render_level_transition, render_minimap, render_pause_menu, render_sprite, render_stamina_bar,
-    render_victory_screen, render_welcome_screen,
+    PlaneTable, WorldSprite, draw_text, render_3d, render_encounter, render_level_selection,
+    render_level_success, render_level_transition, render_minimap, render_pause_menu,
+    render_sprite, render_stamina_bar, render_victory_screen, render_welcome_screen,
 };
 use crate::scp173::Scp173;
 use crate::texture::{SpriteTexture, TextureSet};
@@ -132,6 +134,9 @@ fn main() {
     let mut mouse_capture = MouseCapture::new();
 
     let mut cursor_hidden = false;
+
+    // Encuentro de demostración: se abre y cierra con F6.
+    let mut encounter_session = EncounterSession::new(DEMO_ENCOUNTER);
 
     while window.is_open() {
         let frame_start = Instant::now();
@@ -248,6 +253,37 @@ fn main() {
             GameState::Playing => {
                 if window.is_key_pressed(Key::Escape, KeyRepeat::No) {
                     game_state.toggle_pause();
+                } else if window.is_key_pressed(Key::F6, KeyRepeat::No) {
+                    // Apertura provisional del encuentro de demostración.
+                    game_state = GameState::Encounter;
+
+                    encounter_session = EncounterSession::new(DEMO_ENCOUNTER);
+
+                    // Si el jugador ya sostenía Enter o E, no debe
+                    // confirmar nada en el frame de apertura.
+                    encounter_session.suppress_held_keys();
+                }
+            }
+
+            GameState::Encounter => {
+                if window.is_key_pressed(Key::F6, KeyRepeat::No) {
+                    game_state = GameState::Playing;
+
+                    previous_frame = Instant::now();
+                } else {
+                    // El propio encuentro detecta los flancos, así
+                    // que aquí se pasa el estado crudo de las teclas.
+                    let input = EncounterInput {
+                        next_down: window.is_key_down(Key::S) || window.is_key_down(Key::Down),
+
+                        previous_down: window.is_key_down(Key::W) || window.is_key_down(Key::Up),
+
+                        confirm_down: window.is_key_down(Key::Enter) || window.is_key_down(Key::E),
+                    };
+
+                    if let EncounterUpdate::Confirmed(choice) = encounter_session.update(input) {
+                        println!("Encuentro: opción confirmada -> {}", choice.label);
+                    }
                 }
             }
 
@@ -466,7 +502,7 @@ fn main() {
                 render_victory_screen(&mut framebuffer, victory_menu_option);
             }
 
-            GameState::Playing | GameState::Paused => {
+            GameState::Playing | GameState::Paused | GameState::Encounter => {
                 let render_3d_start = Instant::now();
 
                 render_3d(
@@ -537,6 +573,23 @@ fn main() {
 
                 if game_state == GameState::Paused {
                     render_pause_menu(&mut framebuffer, settings.target_fps());
+                }
+
+                // La escena queda congelada detrás del panel: se
+                // dibuja igual que en Playing y luego se atenúa.
+                if game_state == GameState::Encounter {
+                    let text = encounter_session
+                        .node()
+                        .map(|node| node.text)
+                        .unwrap_or_default();
+
+                    render_encounter(
+                        &mut framebuffer,
+                        encounter_session.entity_name(),
+                        text,
+                        encounter_session.choices(),
+                        encounter_session.selected_index(),
+                    );
                 }
             }
 
