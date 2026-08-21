@@ -65,6 +65,16 @@ const MAX_PLANE_DISTANCE_CELLS: f32 = 24.0;
 /// plano es singular.
 const HORIZON_COLOR: u32 = 0x0B0D0C;
 
+/// Medidor de parpadeo. Va bajo el HUD izquierdo (termina en y=80)
+/// y a la izquierda del minimapa, para no solaparse con ninguno.
+const BLINK_BAR_WIDTH: usize = 360;
+const BLINK_BAR_HEIGHT: usize = 22;
+const BLINK_BAR_TOP: usize = 96;
+const BLINK_BAR_BORDER: usize = 3;
+
+/// Los párpados son opacos: no hay mezcla alfa.
+const BLINK_EYELID_COLOR: u32 = 0x000000;
+
 /// Luz que conserva la escena congelada tras el panel de encuentro.
 const ENCOUNTER_OVERLAY_LIGHT: u32 = 70;
 
@@ -2061,6 +2071,127 @@ fn draw_menu_button(
     draw_text(framebuffer, label, text_x, text_y, scale, text_color);
 }
 
+/// Medidor de parpadeo: arriba y centrado.
+///
+/// Se sitúa por debajo del HUD de la esquina izquierda y a la
+/// izquierda del minimapa, así que no pisa ninguno de los dos.
+pub fn render_blink_bar(framebuffer: &mut Framebuffer, meter_ratio: f32, eyes_closed: bool) {
+    let ratio = if meter_ratio.is_finite() {
+        meter_ratio.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    let bar_x = framebuffer.width.saturating_sub(BLINK_BAR_WIDTH) / 2;
+
+    let bar_y = BLINK_BAR_TOP;
+
+    if framebuffer.width < BLINK_BAR_WIDTH || framebuffer.height < bar_y + BLINK_BAR_HEIGHT {
+        return;
+    }
+
+    let border_color = if eyes_closed { 0xFFCC33 } else { 0xD8D8E0 };
+
+    fill_rect(
+        framebuffer,
+        bar_x,
+        bar_y,
+        BLINK_BAR_WIDTH,
+        BLINK_BAR_HEIGHT,
+        border_color,
+    );
+
+    let inner_x = bar_x + BLINK_BAR_BORDER;
+
+    let inner_y = bar_y + BLINK_BAR_BORDER;
+
+    let inner_width = BLINK_BAR_WIDTH - BLINK_BAR_BORDER * 2;
+
+    let inner_height = BLINK_BAR_HEIGHT - BLINK_BAR_BORDER * 2;
+
+    fill_rect(
+        framebuffer,
+        inner_x,
+        inner_y,
+        inner_width,
+        inner_height,
+        0x18181F,
+    );
+
+    // El relleno se vacía conforme se acerca el parpadeo.
+    let filled_width = (inner_width as f32 * ratio) as usize;
+
+    if filled_width > 0 {
+        let fill_color = if eyes_closed {
+            0xFFCC33
+        } else if ratio > 0.50 {
+            0x66BBDD
+        } else if ratio > 0.20 {
+            0xFFCC33
+        } else {
+            0xFF5555
+        };
+
+        fill_rect(
+            framebuffer,
+            inner_x,
+            inner_y,
+            filled_width.min(inner_width),
+            inner_height,
+            fill_color,
+        );
+    }
+
+    let label = "PARPADEO [ESPACIO]";
+
+    let label_x = bar_x + BLINK_BAR_WIDTH.saturating_sub(text_width(label, 1)) / 2;
+
+    let label_y = bar_y + BLINK_BAR_HEIGHT.saturating_sub(8) / 2;
+
+    draw_text(framebuffer, label, label_x, label_y, 1, 0xD8D8E0);
+}
+
+/// Párpados cerrándose hacia el centro.
+///
+/// Son dos rectángulos opacos, uno desde arriba y otro desde abajo,
+/// no un oscurecimiento global: la imagen se estrecha como al cerrar
+/// los ojos.
+pub fn render_blink_overlay(framebuffer: &mut Framebuffer, closure_ratio: f32) {
+    let ratio = if closure_ratio.is_finite() {
+        closure_ratio.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    if ratio <= 0.0 {
+        return;
+    }
+
+    let width = framebuffer.width;
+    let height = framebuffer.height;
+
+    let covered = (height as f32 * ratio) as usize;
+
+    let covered = covered.min(height);
+
+    // Repartido entre los dos párpados. El de abajo se queda con el
+    // píxel impar, así que un cierre total no deja una franja.
+    let top_height = covered / 2;
+
+    let bottom_height = covered - top_height;
+
+    fill_rect(framebuffer, 0, 0, width, top_height, BLINK_EYELID_COLOR);
+
+    fill_rect(
+        framebuffer,
+        0,
+        height - bottom_height,
+        width,
+        bottom_height,
+        BLINK_EYELID_COLOR,
+    );
+}
+
 pub fn render_stamina_bar(
     framebuffer: &mut Framebuffer,
     stamina_ratio: f32,
@@ -3231,5 +3362,285 @@ mod encounter_screen_tests {
         }
 
         assert_eq!(framebuffer.buffer.len(), WINDOW_WIDTH * WINDOW_HEIGHT);
+    }
+}
+
+#[cfg(test)]
+mod blink_render_tests {
+    use super::{
+        BLINK_BAR_HEIGHT, BLINK_BAR_TOP, BLINK_BAR_WIDTH, render_blink_bar, render_blink_overlay,
+        render_stamina_bar,
+    };
+    use crate::framebuffer::Framebuffer;
+
+    const WINDOW_WIDTH: usize = 1300;
+    const WINDOW_HEIGHT: usize = 900;
+
+    /// Color centinela para detectar qué píxeles se tocaron.
+    const SENTINEL: u32 = 0x00FF00;
+
+    fn window_framebuffer() -> Framebuffer {
+        let mut framebuffer = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        framebuffer.buffer.fill(SENTINEL);
+
+        framebuffer
+    }
+
+    // ----- Barra -----
+
+    #[test]
+    fn the_bar_keeps_the_framebuffer_intact() {
+        for ratio in [0.0, 0.2, 0.5, 1.0, f32::NAN, f32::INFINITY, -3.0] {
+            for closed in [false, true] {
+                let mut framebuffer = window_framebuffer();
+
+                render_blink_bar(&mut framebuffer, ratio, closed);
+
+                assert_eq!(framebuffer.width, WINDOW_WIDTH);
+                assert_eq!(framebuffer.height, WINDOW_HEIGHT);
+                assert_eq!(framebuffer.buffer.len(), WINDOW_WIDTH * WINDOW_HEIGHT);
+            }
+        }
+    }
+
+    #[test]
+    fn the_bar_stays_inside_its_own_band() {
+        let mut framebuffer = window_framebuffer();
+
+        render_blink_bar(&mut framebuffer, 1.0, false);
+
+        // Nada por encima del borde superior de la barra.
+        for y in 0..BLINK_BAR_TOP {
+            for x in 0..WINDOW_WIDTH {
+                assert_eq!(
+                    framebuffer.buffer[y * WINDOW_WIDTH + x],
+                    SENTINEL,
+                    "la barra pintó por encima, en ({x}, {y})",
+                );
+            }
+        }
+
+        // Ni por debajo.
+        for y in (BLINK_BAR_TOP + BLINK_BAR_HEIGHT)..WINDOW_HEIGHT {
+            for x in 0..WINDOW_WIDTH {
+                assert_eq!(
+                    framebuffer.buffer[y * WINDOW_WIDTH + x],
+                    SENTINEL,
+                    "la barra pintó por debajo, en ({x}, {y})",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_bar_and_the_stamina_bar_do_not_overlap() {
+        let mut framebuffer = window_framebuffer();
+
+        render_blink_bar(&mut framebuffer, 1.0, false);
+
+        // Filas tocadas por el medidor de parpadeo.
+        let blink_rows: Vec<usize> = (0..WINDOW_HEIGHT)
+            .filter(|y| {
+                (0..WINDOW_WIDTH).any(|x| framebuffer.buffer[y * WINDOW_WIDTH + x] != SENTINEL)
+            })
+            .collect();
+
+        let mut other = window_framebuffer();
+
+        render_stamina_bar(&mut other, 1.0, false);
+
+        let stamina_rows: Vec<usize> = (0..WINDOW_HEIGHT)
+            .filter(|y| (0..WINDOW_WIDTH).any(|x| other.buffer[y * WINDOW_WIDTH + x] != SENTINEL))
+            .collect();
+
+        assert!(!blink_rows.is_empty(), "la barra no pintó nada");
+        assert!(!stamina_rows.is_empty(), "la stamina no pintó nada");
+
+        for row in &blink_rows {
+            assert!(
+                !stamina_rows.contains(row),
+                "la fila {row} la comparten las dos barras",
+            );
+        }
+    }
+
+    #[test]
+    fn the_bar_does_not_reach_the_left_hud_or_the_minimap() {
+        let mut framebuffer = window_framebuffer();
+
+        render_blink_bar(&mut framebuffer, 1.0, false);
+
+        let bar_x = (WINDOW_WIDTH - BLINK_BAR_WIDTH) / 2;
+
+        // Nada a la izquierda del inicio de la barra...
+        for y in BLINK_BAR_TOP..(BLINK_BAR_TOP + BLINK_BAR_HEIGHT) {
+            for x in 0..bar_x {
+                assert_eq!(framebuffer.buffer[y * WINDOW_WIDTH + x], SENTINEL);
+            }
+
+            // ...ni a la derecha de su final.
+            for x in (bar_x + BLINK_BAR_WIDTH)..WINDOW_WIDTH {
+                assert_eq!(framebuffer.buffer[y * WINDOW_WIDTH + x], SENTINEL);
+            }
+        }
+
+        // El HUD izquierdo termina en y=80 y el minimapa empieza en
+        // x=1112: la barra debe quedar libre de ambos.
+        let topmost_painted = (0..WINDOW_HEIGHT)
+            .find(|y| {
+                (0..WINDOW_WIDTH).any(|x| framebuffer.buffer[y * WINDOW_WIDTH + x] != SENTINEL)
+            })
+            .expect("la barra debe pintar algo");
+
+        assert!(
+            topmost_painted >= 80,
+            "la barra invade el HUD izquierdo: empieza en y={topmost_painted}",
+        );
+
+        assert!(bar_x + BLINK_BAR_WIDTH <= 1112);
+    }
+
+    #[test]
+    fn a_tiny_framebuffer_does_not_panic() {
+        for (width, height) in [(1, 1), (10, 4), (100, 50), (360, 22)] {
+            let mut framebuffer = Framebuffer::new(width, height);
+
+            render_blink_bar(&mut framebuffer, 0.5, false);
+
+            render_blink_bar(&mut framebuffer, f32::NAN, true);
+
+            assert_eq!(framebuffer.buffer.len(), width * height);
+        }
+    }
+
+    // ----- Párpados -----
+
+    fn painted_black(framebuffer: &Framebuffer) -> usize {
+        framebuffer
+            .buffer
+            .iter()
+            .filter(|pixel| **pixel == 0x000000)
+            .count()
+    }
+
+    #[test]
+    fn an_open_eye_does_not_touch_a_single_pixel() {
+        for ratio in [0.0, -1.0, f32::NAN, f32::NEG_INFINITY] {
+            let mut framebuffer = window_framebuffer();
+
+            render_blink_overlay(&mut framebuffer, ratio);
+
+            assert_eq!(
+                painted_black(&framebuffer),
+                0,
+                "un cierre de {ratio} pintó píxeles",
+            );
+        }
+    }
+
+    #[test]
+    fn a_full_closure_paints_everything_black() {
+        let mut framebuffer = window_framebuffer();
+
+        render_blink_overlay(&mut framebuffer, 1.0);
+
+        assert_eq!(painted_black(&framebuffer), WINDOW_WIDTH * WINDOW_HEIGHT);
+    }
+
+    /// Todo valor no finito se trata como cero, igual que en
+    /// `blink::sanitized_ratio`. Ante un dato roto se prefiere no
+    /// tapar la pantalla a taparla entera.
+    #[test]
+    fn every_non_finite_closure_is_treated_as_zero() {
+        for ratio in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+            let mut framebuffer = window_framebuffer();
+
+            render_blink_overlay(&mut framebuffer, ratio);
+
+            assert_eq!(
+                painted_black(&framebuffer),
+                0,
+                "un cierre de {ratio} pintó píxeles",
+            );
+        }
+    }
+
+    #[test]
+    fn a_half_closure_covers_the_edges_and_keeps_the_centre() {
+        let mut framebuffer = window_framebuffer();
+
+        render_blink_overlay(&mut framebuffer, 0.5);
+
+        let quarter = WINDOW_HEIGHT / 4;
+
+        // Arriba, cubierto.
+        assert_eq!(framebuffer.buffer[0], 0x000000);
+
+        assert_eq!(framebuffer.buffer[(quarter - 1) * WINDOW_WIDTH], 0x000000);
+
+        // Abajo, cubierto.
+        assert_eq!(
+            framebuffer.buffer[(WINDOW_HEIGHT - 1) * WINDOW_WIDTH],
+            0x000000,
+        );
+
+        // El centro sigue visible: son párpados, no un fundido.
+        let middle = WINDOW_HEIGHT / 2;
+
+        assert_eq!(framebuffer.buffer[middle * WINDOW_WIDTH], SENTINEL);
+
+        // Y la mitad de la pantalla queda cubierta en total.
+        assert_eq!(
+            painted_black(&framebuffer),
+            WINDOW_WIDTH * (WINDOW_HEIGHT / 2)
+        );
+    }
+
+    #[test]
+    fn the_eyelids_close_towards_the_centre() {
+        // A más cierre, más cobertura, y siempre por los bordes.
+        let mut previous = 0;
+
+        for step in 0..=10 {
+            let ratio = step as f32 / 10.0;
+
+            let mut framebuffer = window_framebuffer();
+
+            render_blink_overlay(&mut framebuffer, ratio);
+
+            let covered = painted_black(&framebuffer);
+
+            assert!(
+                covered >= previous,
+                "el cierre {ratio} cubrió menos que el anterior",
+            );
+
+            // La fila central es la última en taparse.
+            if ratio < 1.0 {
+                let middle = WINDOW_HEIGHT / 2;
+
+                assert_eq!(
+                    framebuffer.buffer[middle * WINDOW_WIDTH],
+                    SENTINEL,
+                    "el centro se tapó con un cierre de {ratio}",
+                );
+            }
+
+            previous = covered;
+        }
+    }
+
+    #[test]
+    fn a_tiny_framebuffer_survives_the_overlay() {
+        for (width, height) in [(1, 1), (3, 2), (10, 5)] {
+            let mut framebuffer = Framebuffer::new(width, height);
+
+            for ratio in [0.0, 0.5, 1.0, f32::NAN] {
+                render_blink_overlay(&mut framebuffer, ratio);
+            }
+
+            assert_eq!(framebuffer.buffer.len(), width * height);
+        }
     }
 }

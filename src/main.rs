@@ -1,4 +1,5 @@
 mod audio;
+mod blink;
 mod caster;
 mod encounter;
 mod encounter_trigger;
@@ -17,6 +18,7 @@ use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 
 use crate::audio::{AudioManager, should_play_crack};
+use crate::blink::{BlinkSystem, BlinkUpdate, blink_enabled, effective_observation};
 use crate::encounter::{
     EdgeTrigger, EncounterInput, EncounterSession, EncounterUpdate, GameplayGate, GameplayStep,
     SCP_173_ENCOUNTER,
@@ -33,10 +35,10 @@ use crate::maze::load_maze;
 use crate::mouse_capture::{MouseCapture, should_capture_cursor};
 use crate::player::{MouseLook, PlayerMotion, process_events};
 use crate::renderer::{
-    PlaneTable, WorldSprite, draw_text, render_3d, render_defeat_screen, render_encounter,
-    render_level_selection, render_level_success, render_level_transition, render_minimap,
-    render_pause_menu, render_sprite, render_stamina_bar, render_victory_screen,
-    render_welcome_screen,
+    PlaneTable, WorldSprite, draw_text, render_3d, render_blink_bar, render_blink_overlay,
+    render_defeat_screen, render_encounter, render_level_selection, render_level_success,
+    render_level_transition, render_minimap, render_pause_menu, render_sprite, render_stamina_bar,
+    render_victory_screen, render_welcome_screen,
 };
 use crate::scp173::Scp173;
 use crate::texture::{SpriteTexture, TextureSet};
@@ -50,6 +52,12 @@ const LEVEL_TRANSITION_DURATION: f32 = 4.5;
 
 /// Radio, en celdas, al que SCP-173 provoca el encuentro.
 const SCP_173_TRIGGER_RADIUS_CELLS: f32 = 1.25;
+
+/// Segundos entre parpadeos automáticos.
+const BLINK_INTERVAL_SECONDS: f32 = 6.0;
+
+/// Cuánto permanecen cerrados los ojos.
+const BLINK_CLOSED_SECONDS: f32 = 0.22;
 
 fn main() {
     let window_width = 1300;
@@ -162,6 +170,9 @@ fn main() {
     // Solo F6 puede retirar lo que F6 abrió.
     let mut encounter_origin: Option<EncounterOrigin> = None;
 
+    // Ciclo de parpadeo: durante el cierre nadie observa a SCP-173.
+    let mut blink_system = BlinkSystem::new(BLINK_INTERVAL_SECONDS, BLINK_CLOSED_SECONDS);
+
     while window.is_open() {
         let frame_start = Instant::now();
 
@@ -201,6 +212,9 @@ fn main() {
             confirm_down: window.is_key_down(Key::Enter) || window.is_key_down(Key::E),
         };
 
+        // Espacio se lee una sola vez por frame, igual que el resto.
+        let manual_blink_down = window.is_key_down(Key::Space);
+
         match game_state {
             GameState::Welcome => {
                 if enter_pressed {
@@ -237,6 +251,8 @@ fn main() {
                         // Intento nuevo: el encuentro vuelve a estar
                         // pendiente.
                         scp_173_trigger.reset();
+
+                        blink_system.reset(manual_blink_down);
 
                         encounter_origin = None;
 
@@ -290,6 +306,8 @@ fn main() {
 
                             scp_173_trigger.reset();
 
+                            blink_system.reset(manual_blink_down);
+
                             encounter_origin = None;
                         }
                     }
@@ -324,6 +342,8 @@ fn main() {
 
                     scp_173_trigger.reset();
 
+                    blink_system.reset(manual_blink_down);
+
                     encounter_origin = None;
 
                     // Un impacto largo no debe invadir el terminal.
@@ -343,6 +363,8 @@ fn main() {
                     scp_173.reset();
 
                     scp_173_trigger.reset();
+
+                    blink_system.reset(manual_blink_down);
 
                     encounter_origin = None;
 
@@ -491,6 +513,8 @@ fn main() {
 
                             scp_173_trigger.reset();
 
+                            blink_system.reset(manual_blink_down);
+
                             encounter_origin = None;
 
                             game_state = GameState::Welcome;
@@ -604,8 +628,31 @@ fn main() {
                 mouse_rotation_delta,
             );
 
+            // El parpadeo se resuelve antes de mover a SCP-173: la
+            // ventana cerrada debe valer desde su primer frame.
+            let blink_update = if blink_enabled(game_session.current_level_number()) {
+                blink_system.update(delta_time, manual_blink_down)
+            } else {
+                blink_system.sync_manual_key(manual_blink_down);
+
+                BlinkUpdate::Idle
+            };
+
+            if blink_update == BlinkUpdate::Started {
+                println!("Parpadeo: ojos cerrados. Fase {:?}", blink_system.phase());
+            }
+
+            if blink_update == BlinkUpdate::Ended {
+                println!("Parpadeo: ojos abiertos. Fase {:?}", blink_system.phase());
+            }
+
             if game_session.current_level_number() == 1 {
-                let scp_173_observed = scp_173.is_observed(&maze, &player, BLOCK_SIZE, FOV);
+                let geometrically_observed = scp_173.is_observed(&maze, &player, BLOCK_SIZE, FOV);
+
+                // Con los ojos cerrados nadie observa, aunque la
+                // figura siga dentro del campo de visión.
+                let scp_173_observed =
+                    effective_observation(geometrically_observed, blink_system.is_closed());
 
                 scp_173.update(&maze, &player, BLOCK_SIZE, scp_173_observed, delta_time);
             }
@@ -666,6 +713,8 @@ fn main() {
                 // Sector nuevo: el encuentro vuelve a estar pendiente.
                 scp_173_trigger.reset();
 
+                blink_system.reset(manual_blink_down);
+
                 encounter_origin = None;
 
                 game_state = GameState::Playing;
@@ -674,6 +723,13 @@ fn main() {
 
                 println!("Nivel cargado: {}", game_session.current_level_path(),);
             }
+        }
+
+        // Fuera del gameplay el ciclo queda congelado, no reiniciado.
+        // Sincronizar la tecla evita que una pulsación hecha en un
+        // menú dispare un parpadeo al reanudar.
+        if gameplay_step != GameplayStep::Running {
+            blink_system.sync_manual_key(manual_blink_down);
         }
 
         // Punto único desde el que se toca el audio: la acción se
@@ -759,9 +815,14 @@ fn main() {
                 }
 
                 if game_session.current_level_number() == 1 {
-                    let scp_173_observed = scp_173.is_observed(&maze, &player, BLOCK_SIZE, FOV);
+                    let geometrically_observed =
+                        scp_173.is_observed(&maze, &player, BLOCK_SIZE, FOV);
 
-                    let (observation_text, observation_color) = if scp_173_observed {
+                    // Con los ojos cerrados no se anuncia observación
+                    // aunque la figura siga dentro del FOV.
+                    let (observation_text, observation_color) = if blink_system.is_closed() {
+                        ("PARPADEO: OJOS CERRADOS", 0xFFCC33)
+                    } else if effective_observation(geometrically_observed, false) {
                         ("SCP-173: OBSERVADO", 0x55DD77)
                     } else {
                         ("SCP-173: NO OBSERVADO", 0xFF5555)
@@ -783,6 +844,22 @@ fn main() {
                     player.is_sprint_exhausted(),
                 );
 
+                // El panel del encuentro debe quedar legible aunque
+                // haya empezado con los ojos cerrados, así que allí
+                // no se dibuja ni la barra ni los párpados.
+                if game_state != GameState::Encounter
+                    && blink_enabled(game_session.current_level_number())
+                {
+                    render_blink_bar(
+                        &mut framebuffer,
+                        blink_system.meter_ratio(),
+                        blink_system.is_closed(),
+                    );
+
+                    render_blink_overlay(&mut framebuffer, blink_system.closure_ratio());
+                }
+
+                // Después de los párpados, para que siga legible.
                 if game_state == GameState::Paused {
                     render_pause_menu(&mut framebuffer, settings.target_fps());
                 }
