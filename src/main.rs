@@ -16,7 +16,9 @@ use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 
 use crate::audio::AudioManager;
-use crate::encounter::{DEMO_ENCOUNTER, EncounterInput, EncounterSession, EncounterUpdate};
+use crate::encounter::{
+    DEMO_ENCOUNTER, EncounterInput, EncounterSession, EncounterUpdate, GameplayGate, GameplayStep,
+};
 use crate::framebuffer::Framebuffer;
 use crate::game::{
     GameSession, GameSettings, GameState, LevelSelectionMenu, LevelSuccessOption,
@@ -138,6 +140,10 @@ fn main() {
     // Encuentro de demostración: se abre y cierra con F6.
     let mut encounter_session = EncounterSession::new(DEMO_ENCOUNTER);
 
+    // Impide que el input del encuentro se filtre al gameplay al
+    // volver al mundo. Servirá igual para ReturnToWorld.
+    let mut gameplay_gate = GameplayGate::new();
+
     while window.is_open() {
         let frame_start = Instant::now();
 
@@ -164,6 +170,18 @@ fn main() {
 
         let menu_previous = window.is_key_pressed(Key::W, KeyRepeat::No)
             || window.is_key_pressed(Key::Up, KeyRepeat::No);
+
+        // Estado crudo de las teclas del encuentro. Se lee una sola
+        // vez y sirve para tres cosas: sembrar los detectores al
+        // abrir, alimentarlos mientras está abierto, y decidir
+        // cuándo se puede reanudar el gameplay al cerrar.
+        let encounter_input = EncounterInput {
+            next_down: window.is_key_down(Key::S) || window.is_key_down(Key::Down),
+
+            previous_down: window.is_key_down(Key::W) || window.is_key_down(Key::Up),
+
+            confirm_down: window.is_key_down(Key::Enter) || window.is_key_down(Key::E),
+        };
 
         match game_state {
             GameState::Welcome => {
@@ -259,9 +277,9 @@ fn main() {
 
                     encounter_session = EncounterSession::new(DEMO_ENCOUNTER);
 
-                    // Si el jugador ya sostenía Enter o E, no debe
-                    // confirmar nada en el frame de apertura.
-                    encounter_session.suppress_held_keys();
+                    // Con el estado real del teclado: solo se bloquea
+                    // lo que de verdad estaba sostenido.
+                    encounter_session.seed_input_state(encounter_input);
                 }
             }
 
@@ -269,21 +287,13 @@ fn main() {
                 if window.is_key_pressed(Key::F6, KeyRepeat::No) {
                     game_state = GameState::Playing;
 
-                    previous_frame = Instant::now();
-                } else {
-                    // El propio encuentro detecta los flancos, así
-                    // que aquí se pasa el estado crudo de las teclas.
-                    let input = EncounterInput {
-                        next_down: window.is_key_down(Key::S) || window.is_key_down(Key::Down),
-
-                        previous_down: window.is_key_down(Key::W) || window.is_key_down(Key::Up),
-
-                        confirm_down: window.is_key_down(Key::Enter) || window.is_key_down(Key::E),
-                    };
-
-                    if let EncounterUpdate::Confirmed(choice) = encounter_session.update(input) {
-                        println!("Encuentro: opción confirmada -> {}", choice.label);
-                    }
+                    // El gameplay no se reanuda aquí: la compuerta lo
+                    // retiene hasta que se suelten las teclas.
+                    gameplay_gate.arm();
+                } else if let EncounterUpdate::Confirmed(choice) =
+                    encounter_session.update(encounter_input)
+                {
+                    println!("Encuentro: opción confirmada -> {}", choice.label);
                 }
             }
 
@@ -413,7 +423,21 @@ fn main() {
         // colisiones. Fuera de Playing el jugador no se mueve.
         let mut player_motion = PlayerMotion::Still;
 
-        if game_state == GameState::Playing {
+        // La compuerta solo avanza en Playing: en cualquier otro
+        // estado sigue esperando y no consume la soltada de teclas.
+        let gameplay_step = if game_state == GameState::Playing {
+            gameplay_gate.update(encounter_input)
+        } else {
+            GameplayStep::Blocked
+        };
+
+        if gameplay_step == GameplayStep::Released {
+            // Reloj fresco: el primer frame de gameplay no arrastra
+            // el tiempo transcurrido durante el encuentro.
+            previous_frame = Instant::now();
+        }
+
+        if gameplay_step == GameplayStep::Running {
             player_motion = process_events(
                 &window,
                 &mut player,
