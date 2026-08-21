@@ -595,6 +595,10 @@ impl EncounterSession {
 
         let previous_fired = self.previous_trigger.update(input.previous_down);
 
+        // Confirmar manda sobre navegar, y lo hace con la selección
+        // que estaba activa al empezar el frame. Los flancos de
+        // navegación ya se consumieron arriba, así que se descartan
+        // en lugar de aplicarse ahora o de guardarse para después.
         if confirm_fired {
             return self.confirm();
         }
@@ -604,25 +608,26 @@ impl EncounterSession {
             return EncounterUpdate::Idle;
         }
 
-        let mut moved = false;
+        // Subir y bajar en el mismo frame se anulan. Aplicar ambas
+        // dejaría el índice donde estaba por pura cancelación
+        // modular, pero se reportaría un cambio que no ocurrió.
+        if next_fired && previous_fired {
+            return EncounterUpdate::Idle;
+        }
 
         if next_fired {
             self.select_next();
 
-            moved = true;
+            return EncounterUpdate::SelectionChanged;
         }
 
         if previous_fired {
             self.select_previous();
 
-            moved = true;
+            return EncounterUpdate::SelectionChanged;
         }
 
-        if moved {
-            EncounterUpdate::SelectionChanged
-        } else {
-            EncounterUpdate::Idle
-        }
+        EncounterUpdate::Idle
     }
 
     fn confirm(&mut self) -> EncounterUpdate {
@@ -1862,5 +1867,230 @@ mod lethal_tests {
         assert_eq!(fresh.selected_index(), 0);
         assert!(!fresh.is_lethal_locked());
         assert_eq!(fresh.choices().len(), 4);
+    }
+}
+
+#[cfg(test)]
+mod input_precedence_tests {
+    use super::{
+        EncounterInput, EncounterPhase, EncounterSession, EncounterUpdate, PlayerAction,
+        SCP_173_ENCOUNTER,
+    };
+
+    const RELEASED: EncounterInput = EncounterInput {
+        next_down: false,
+        previous_down: false,
+        confirm_down: false,
+    };
+
+    const NEXT: EncounterInput = EncounterInput {
+        next_down: true,
+        previous_down: false,
+        confirm_down: false,
+    };
+
+    const PREVIOUS: EncounterInput = EncounterInput {
+        next_down: false,
+        previous_down: true,
+        confirm_down: false,
+    };
+
+    /// Arriba y abajo pulsadas a la vez.
+    const BOTH_DIRECTIONS: EncounterInput = EncounterInput {
+        next_down: true,
+        previous_down: true,
+        confirm_down: false,
+    };
+
+    /// Confirmar y bajar a la vez.
+    const CONFIRM_AND_NEXT: EncounterInput = EncounterInput {
+        next_down: true,
+        previous_down: false,
+        confirm_down: true,
+    };
+
+    /// Confirmar y subir a la vez.
+    const CONFIRM_AND_PREVIOUS: EncounterInput = EncounterInput {
+        next_down: false,
+        previous_down: true,
+        confirm_down: true,
+    };
+
+    /// Las tres a la vez.
+    const EVERYTHING: EncounterInput = EncounterInput {
+        next_down: true,
+        previous_down: true,
+        confirm_down: true,
+    };
+
+    fn session() -> EncounterSession {
+        EncounterSession::new(SCP_173_ENCOUNTER)
+    }
+
+    fn select(session: &mut EncounterSession, index: usize) {
+        while session.selected_index() != index {
+            session.update(NEXT);
+
+            session.update(RELEASED);
+        }
+    }
+
+    // ----- Confirmar tiene prioridad -----
+
+    #[test]
+    fn confirming_wins_over_moving_down_in_the_same_frame() {
+        let mut session = session();
+
+        // ATACAR resaltado al empezar el frame.
+        assert_eq!(session.selected_index(), 0);
+
+        let update = session.update(CONFIRM_AND_NEXT);
+
+        // Se confirma la acción que estaba activa, no la siguiente.
+        assert_eq!(update, EncounterUpdate::ActionTaken(PlayerAction::Attack));
+
+        assert_eq!(session.phase(), EncounterPhase::PlayerResolution);
+    }
+
+    #[test]
+    fn confirming_wins_over_moving_up_in_the_same_frame() {
+        let mut session = session();
+
+        // OBJETO resaltado al empezar el frame.
+        select(&mut session, 1);
+
+        let update = session.update(CONFIRM_AND_PREVIOUS);
+
+        // No se confirma ATACAR, que sería la opción anterior.
+        assert_eq!(update, EncounterUpdate::ActionTaken(PlayerAction::Item));
+    }
+
+    #[test]
+    fn confirming_uses_the_selection_from_the_start_of_the_frame() {
+        // Se comprueba en las cuatro posiciones, para que no dependa
+        // de dónde esté el cursor.
+        let expected = [
+            PlayerAction::Attack,
+            PlayerAction::Item,
+            PlayerAction::Flee,
+            PlayerAction::MaintainGaze,
+        ];
+
+        for (index, action) in expected.iter().enumerate() {
+            for input in [CONFIRM_AND_NEXT, CONFIRM_AND_PREVIOUS, EVERYTHING] {
+                let mut session = session();
+
+                select(&mut session, index);
+
+                assert_eq!(
+                    session.update(input),
+                    EncounterUpdate::ActionTaken(*action),
+                    "la selección {index} cambió antes de confirmarse",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_navigation_edge_is_consumed_when_confirming() {
+        let mut session = session();
+
+        // Confirmar mientras se baja: el flanco de bajar se gasta.
+        session.update(CONFIRM_AND_NEXT);
+
+        // Con la tecla aún pulsada no queda un movimiento pendiente
+        // que se aplique al volver a elegir.
+        session.update(NEXT);
+        session.update(NEXT);
+
+        assert_eq!(session.selected_index(), 0);
+    }
+
+    // ----- Direcciones opuestas se anulan -----
+
+    #[test]
+    fn opposite_directions_cancel_each_other() {
+        let mut session = session();
+
+        let update = session.update(BOTH_DIRECTIONS);
+
+        assert_eq!(
+            update,
+            EncounterUpdate::Idle,
+            "pulsar ambas direcciones no debe reportar un cambio",
+        );
+
+        assert_eq!(session.selected_index(), 0);
+    }
+
+    #[test]
+    fn opposite_directions_cancel_from_any_position() {
+        for index in 0..4 {
+            let mut session = session();
+
+            select(&mut session, index);
+
+            assert_eq!(session.update(BOTH_DIRECTIONS), EncounterUpdate::Idle);
+
+            assert_eq!(
+                session.selected_index(),
+                index,
+                "la selección se movió desde la posición {index}",
+            );
+        }
+    }
+
+    #[test]
+    fn cancelled_directions_still_consume_their_edges() {
+        let mut session = session();
+
+        assert_eq!(session.update(BOTH_DIRECTIONS), EncounterUpdate::Idle);
+
+        // Soltar solo una: la otra sigue pulsada y ya gastó su flanco,
+        // así que no debe moverse nada.
+        assert_eq!(session.update(NEXT), EncounterUpdate::Idle);
+
+        assert_eq!(session.selected_index(), 0);
+
+        // Tras soltar del todo, cada dirección vuelve a responder.
+        session.update(RELEASED);
+
+        assert_eq!(session.update(NEXT), EncounterUpdate::SelectionChanged,);
+
+        assert_eq!(session.selected_index(), 1);
+    }
+
+    #[test]
+    fn releasing_one_direction_lets_the_other_act_again() {
+        let mut session = session();
+
+        session.update(BOTH_DIRECTIONS);
+
+        // Se suelta bajar y se mantiene subir: subir ya gastó su
+        // flanco, así que hace falta volver a pulsarla.
+        session.update(PREVIOUS);
+
+        assert_eq!(session.selected_index(), 0);
+
+        session.update(RELEASED);
+
+        assert_eq!(session.update(PREVIOUS), EncounterUpdate::SelectionChanged,);
+
+        // Subir desde la primera opción envuelve a la última.
+        assert_eq!(session.selected_index(), 3);
+    }
+
+    #[test]
+    fn opposite_directions_are_still_inert_outside_player_choice() {
+        let mut session = session();
+
+        session.update(CONFIRM_AND_NEXT);
+        session.update(RELEASED);
+
+        assert_eq!(session.phase(), EncounterPhase::PlayerResolution);
+
+        assert_eq!(session.update(BOTH_DIRECTIONS), EncounterUpdate::Idle);
+
+        assert_eq!(session.selected_index(), 0);
     }
 }
