@@ -1,6 +1,6 @@
 use crate::caster::{WallSide, cast_ray};
-use crate::encounter::EncounterChoice;
 use crate::framebuffer::Framebuffer;
+use crate::game::encounter::EncounterChoice;
 use crate::game::{
     LevelSuccessOption, VictoryMenuOption, level_count as game_level_count,
     level_info as game_level_info,
@@ -3039,8 +3039,8 @@ mod encounter_screen_tests {
         ENCOUNTER_LINE_HEIGHT, ENCOUNTER_MAX_TEXT_LINES, EncounterLayout, render_encounter,
         text_width, wrap_text,
     };
-    use crate::encounter::{EncounterChoice, EncounterSession, SCP_173_ENCOUNTER};
     use crate::framebuffer::Framebuffer;
+    use crate::game::encounter::{EncounterChoice, EncounterSession, SCP_173_ENCOUNTER};
 
     const WINDOW_WIDTH: usize = 1300;
     const WINDOW_HEIGHT: usize = 900;

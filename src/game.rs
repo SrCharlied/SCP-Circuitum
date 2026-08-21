@@ -1,3 +1,7 @@
+pub mod encounter;
+pub mod encounter_trigger;
+pub mod scp173;
+
 use std::time::Duration;
 
 const FPS_OPTIONS: [u32; 3] = [60, 120, 144];

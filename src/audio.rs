@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 
-use crate::encounter::{EncounterPhase, EncounterUpdate};
 use crate::game::GameState;
+use crate::game::encounter::{EncounterPhase, EncounterUpdate};
 use crate::player::PlayerMotion;
 
 /// Pista ambiental que acompaña la exploración.
@@ -647,7 +647,7 @@ mod footstep_tests {
 #[cfg(test)]
 mod crack_tests {
     use super::{CRACK_PATH, should_play_crack};
-    use crate::encounter::{
+    use crate::game::encounter::{
         EncounterInput, EncounterPhase, EncounterSession, EncounterUpdate, PlayerAction,
         SCP_173_ENCOUNTER,
     };

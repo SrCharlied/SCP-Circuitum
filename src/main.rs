@@ -1,15 +1,12 @@
 mod audio;
-mod blink;
 mod caster;
-mod encounter;
-mod encounter_trigger;
 mod framebuffer;
 mod game;
 mod maze;
+mod mechanics;
 mod mouse_capture;
 mod player;
 mod renderer;
-mod scp173;
 mod texture;
 
 use minifb::{Key, KeyRepeat, MouseMode, Window, WindowOptions};
@@ -18,20 +15,21 @@ use std::f32::consts::PI;
 use std::time::{Duration, Instant};
 
 use crate::audio::{AudioManager, should_play_crack};
-use crate::blink::{BlinkSystem, BlinkUpdate, blink_enabled, effective_observation};
-use crate::encounter::{
+use crate::framebuffer::Framebuffer;
+use crate::game::encounter::{
     EdgeTrigger, EncounterInput, EncounterSession, EncounterUpdate, GameplayGate, GameplayStep,
     SCP_173_ENCOUNTER,
 };
-use crate::encounter_trigger::{
+use crate::game::encounter_trigger::{
     EncounterOrigin, ProximityEncounterTrigger, can_close_debug_encounter, scp_173_trigger_enabled,
 };
-use crate::framebuffer::Framebuffer;
+use crate::game::scp173::Scp173;
 use crate::game::{
     GameSession, GameSettings, GameState, LevelSelectionMenu, LevelSuccessOption,
     LevelSuccessOutcome, VictoryMenuOption, confirm_level_success, state_after_reaching_goal,
 };
 use crate::maze::load_maze;
+use crate::mechanics::blink::{BlinkSystem, BlinkUpdate, blink_enabled, effective_observation};
 use crate::mouse_capture::{MouseCapture, should_capture_cursor};
 use crate::player::{MouseLook, PlayerMotion, process_events};
 use crate::renderer::{
@@ -40,7 +38,6 @@ use crate::renderer::{
     render_level_transition, render_minimap, render_pause_menu, render_sprite, render_stamina_bar,
     render_victory_screen, render_welcome_screen,
 };
-use crate::scp173::Scp173;
 use crate::texture::{SpriteTexture, TextureSet};
 
 const BLOCK_SIZE: usize = 100;

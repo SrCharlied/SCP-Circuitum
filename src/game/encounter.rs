@@ -1280,9 +1280,9 @@ mod gate_tests {
         EncounterInput, EncounterSession, EncounterUpdate, GameplayGate, GameplayStep,
         SCP_173_ENCOUNTER,
     };
+    use crate::game::scp173::Scp173;
     use crate::maze::Maze;
     use crate::player::Player;
-    use crate::scp173::Scp173;
     use nalgebra_glm::Vec2;
 
     const BLOCK_SIZE: usize = 100;
