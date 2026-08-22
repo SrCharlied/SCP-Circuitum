@@ -543,3 +543,161 @@ mod tests {
         assert_eq!(transition.intensity(), 0.0);
     }
 }
+
+/// El destello no solo se ve: mientras dura, el encuentro no acepta
+/// nada. Estas pruebas reproducen la misma rama que corre `main`
+/// para que la garantía quede fijada aquí y no solo en el bucle.
+#[cfg(test)]
+mod transition_input_gate_tests {
+    use super::EncounterTransition;
+    use crate::game::encounter::{
+        EncounterInput, EncounterPhase, EncounterSession, SCP_173_ENCOUNTER,
+    };
+
+    const DURATION: f32 = 1.0;
+    const SOLID: f32 = 0.15;
+    const FRAME: f32 = 1.0 / 60.0;
+
+    fn navigation_input() -> EncounterInput {
+        EncounterInput {
+            next_down: true,
+            previous_down: false,
+            confirm_down: false,
+        }
+    }
+
+    fn released_input() -> EncounterInput {
+        EncounterInput {
+            next_down: false,
+            previous_down: false,
+            confirm_down: false,
+        }
+    }
+
+    /// Misma precedencia que la rama `GameState::Encounter` de `main`.
+    fn frame(
+        transition: &mut EncounterTransition,
+        session: &mut EncounterSession,
+        input: EncounterInput,
+        delta_time: f32,
+    ) {
+        transition.update(delta_time);
+
+        if transition.is_active() {
+            session.seed_input_state(input);
+        } else {
+            session.update(input);
+        }
+    }
+
+    #[test]
+    fn an_active_transition_blocks_every_interaction() {
+        let mut transition = EncounterTransition::new(DURATION, SOLID);
+
+        let mut session = EncounterSession::new(SCP_173_ENCOUNTER);
+
+        transition.start();
+
+        let confirm_and_navigate = EncounterInput {
+            next_down: true,
+            previous_down: false,
+            confirm_down: true,
+        };
+
+        // Medio segundo pulsando todo a la vez.
+        for _ in 0..30 {
+            frame(&mut transition, &mut session, confirm_and_navigate, FRAME);
+        }
+
+        assert!(transition.is_active());
+
+        assert_eq!(session.selected_index(), 0, "la selección se movió");
+
+        assert_eq!(
+            session.phase(),
+            EncounterPhase::PlayerChoice,
+            "el turno avanzó durante el destello",
+        );
+
+        assert_eq!(session.turn_count(), 0);
+    }
+
+    #[test]
+    fn a_finished_transition_lets_the_encounter_run_again() {
+        let mut transition = EncounterTransition::new(DURATION, SOLID);
+
+        let mut session = EncounterSession::new(SCP_173_ENCOUNTER);
+
+        transition.start();
+
+        // Sin tocar nada hasta que el destello termina.
+        while transition.is_active() {
+            frame(&mut transition, &mut session, released_input(), FRAME);
+        }
+
+        frame(&mut transition, &mut session, navigation_input(), FRAME);
+
+        assert_eq!(session.selected_index(), 1);
+    }
+
+    #[test]
+    fn a_key_held_through_the_flash_stays_seeded() {
+        let mut transition = EncounterTransition::new(DURATION, SOLID);
+
+        let mut session = EncounterSession::new(SCP_173_ENCOUNTER);
+
+        transition.start();
+
+        // La tecla ya venía pulsada desde antes de entrar.
+        while transition.is_active() {
+            frame(&mut transition, &mut session, navigation_input(), FRAME);
+        }
+
+        // Sigue pulsada al revelarse el encuentro: no hay flanco.
+        for _ in 0..20 {
+            frame(&mut transition, &mut session, navigation_input(), FRAME);
+        }
+
+        assert_eq!(
+            session.selected_index(),
+            0,
+            "la tecla sostenida atravesó el destello",
+        );
+
+        // Soltar y volver a pulsar sí cuenta.
+        frame(&mut transition, &mut session, released_input(), FRAME);
+
+        frame(&mut transition, &mut session, navigation_input(), FRAME);
+
+        assert_eq!(session.selected_index(), 1);
+    }
+
+    #[test]
+    fn the_reveal_never_skips_the_first_option() {
+        let mut transition = EncounterTransition::new(DURATION, SOLID);
+
+        let mut session = EncounterSession::new(SCP_173_ENCOUNTER);
+
+        transition.start();
+
+        // Cada frame del destello siembra el estado, así que da igual
+        // en qué momento exacto termine: al revelar sigue en la
+        // primera acción.
+        for step in 0..40 {
+            let delta_time = if step % 3 == 0 { FRAME } else { FRAME * 2.0 };
+
+            frame(
+                &mut transition,
+                &mut session,
+                navigation_input(),
+                delta_time,
+            );
+
+            assert_eq!(
+                session.selected_index(),
+                0,
+                "la selección saltó en el paso {step}",
+            );
+        }
+    }
+}

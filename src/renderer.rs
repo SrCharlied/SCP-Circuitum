@@ -75,8 +75,35 @@ const BLINK_BAR_BORDER: usize = 3;
 /// Los párpados son opacos: no hay mezcla alfa.
 const BLINK_EYELID_COLOR: u32 = 0x000000;
 
-/// Luz que conserva la escena congelada tras el panel de encuentro.
-const ENCOUNTER_OVERLAY_LIGHT: u32 = 70;
+/// Márgenes de la arena de combate.
+const ENCOUNTER_STAGE_MARGIN_X: usize = 40;
+const ENCOUNTER_STAGE_MARGIN_TOP: usize = 24;
+
+/// Aire visible entre la arena y el marco de texto.
+const ENCOUNTER_STAGE_GAP: usize = 20;
+
+/// Altura de la línea de horizonte dentro de la arena.
+const ENCOUNTER_HORIZON_PERCENT: usize = 62;
+
+/// Altura objetivo de la entidad y sus topes.
+const ENCOUNTER_ENTITY_TARGET_HEIGHT: usize = 340;
+const ENCOUNTER_ENTITY_MAX_HEIGHT_PERCENT: usize = 72;
+const ENCOUNTER_ENTITY_MAX_WIDTH_PERCENT: usize = 45;
+
+/// Altura, dentro de la arena, donde se apoyan los pies de la entidad.
+const ENCOUNTER_ENTITY_BASELINE_PERCENT: usize = 88;
+
+/// Paleta industrial de la arena.
+mod encounter_stage_palette {
+    pub const BACKGROUND: u32 = 0x07090D;
+    pub const BACK_WALL: u32 = 0x10141A;
+    pub const CENTRAL_BAY: u32 = 0x171C22;
+    pub const INNER_LIGHT: u32 = 0x20262E;
+    pub const FLOOR: u32 = 0x090B0F;
+    pub const FLOOR_LINE: u32 = 0x20262B;
+    pub const RUST: u32 = 0x6E3A24;
+    pub const DIM_BORDER: u32 = 0x39414B;
+}
 
 /// Márgenes del marco exterior del encuentro.
 const ENCOUNTER_FRAME_MARGIN_X: usize = 40;
@@ -1363,6 +1390,11 @@ fn wrap_text(text: &str, max_characters: usize) -> Vec<String> {
 /// partan exactamente de los mismos números.
 #[derive(Clone, Copy, Debug)]
 pub struct EncounterLayout {
+    pub stage_x: usize,
+    pub stage_y: usize,
+    pub stage_width: usize,
+    pub stage_height: usize,
+
     pub frame_x: usize,
     pub frame_y: usize,
     pub frame_width: usize,
@@ -1413,7 +1445,25 @@ impl EncounterLayout {
 
         let right_width = available.saturating_sub(left_width);
 
+        // La arena ocupa todo lo que queda por encima del marco.
+        // El tope superior se recorta contra `frame_y` para que
+        // `stage_y + stage_height <= frame_y` se cumpla también en
+        // ventanas diminutas, donde no cabe ni el margen.
+        let stage_x = ENCOUNTER_STAGE_MARGIN_X;
+
+        let stage_width = window_width.saturating_sub(ENCOUNTER_STAGE_MARGIN_X * 2);
+
+        let stage_y = ENCOUNTER_STAGE_MARGIN_TOP.min(frame_y);
+
+        let stage_height = frame_y
+            .saturating_sub(ENCOUNTER_STAGE_GAP)
+            .saturating_sub(stage_y);
+
         Self {
+            stage_x,
+            stage_y,
+            stage_width,
+            stage_height,
             frame_x,
             frame_y,
             frame_width,
@@ -1426,6 +1476,58 @@ impl EncounterLayout {
             panels_height,
             footer_y,
         }
+    }
+
+    /// Altura de la línea de horizonte de la arena.
+    pub fn horizon_y(&self) -> usize {
+        self.stage_y + self.stage_height * ENCOUNTER_HORIZON_PERCENT / 100
+    }
+
+    /// Rectángulo donde se dibuja la entidad dentro de la arena.
+    ///
+    /// Conserva la proporción de la textura, se centra en horizontal
+    /// y apoya los pies cerca del suelo. El tope de ancho se mide
+    /// contra la arena, que es más estrecha que la ventana, así que
+    /// nunca supera el 45 % del ancho total.
+    pub fn entity_rect(
+        &self,
+        texture_width: usize,
+        texture_height: usize,
+    ) -> (usize, usize, usize, usize) {
+        if texture_width == 0
+            || texture_height == 0
+            || self.stage_width == 0
+            || self.stage_height == 0
+        {
+            return (self.stage_x, self.stage_y, 0, 0);
+        }
+
+        let max_height = self.stage_height * ENCOUNTER_ENTITY_MAX_HEIGHT_PERCENT / 100;
+
+        let max_width = self.stage_width * ENCOUNTER_ENTITY_MAX_WIDTH_PERCENT / 100;
+
+        let mut height = ENCOUNTER_ENTITY_TARGET_HEIGHT.min(max_height);
+
+        let mut width = height * texture_width / texture_height;
+
+        // Si la figura es muy ancha manda el tope horizontal.
+        if width > max_width {
+            width = max_width;
+
+            height = width * texture_height / texture_width;
+        }
+
+        if width == 0 || height == 0 {
+            return (self.stage_x, self.stage_y, 0, 0);
+        }
+
+        let x = self.stage_x + self.stage_width.saturating_sub(width) / 2;
+
+        let baseline = self.stage_y + self.stage_height * ENCOUNTER_ENTITY_BASELINE_PERCENT / 100;
+
+        let y = baseline.saturating_sub(height).max(self.stage_y);
+
+        (x, y, width, height)
     }
 
     /// Caracteres que caben en un renglón del panel izquierdo.
@@ -1445,30 +1547,278 @@ impl EncounterLayout {
     }
 }
 
-/// Composición del encuentro sobre la escena congelada.
+/// Fondo industrial de la arena, sin la entidad.
 ///
-/// Marco exterior, división vertical interna, panel izquierdo para
-/// el relato y panel derecho para las acciones, con un pie común.
-/// Recibe únicamente datos: la narrativa vive en `encounter`.
+/// Cubre el framebuffer completo: el encuentro no hereda ni un píxel
+/// de la escena de exploración. Todo son rectángulos planos, así que
+/// el costo no depende de la resolución más que linealmente.
+fn draw_stage_background(framebuffer: &mut Framebuffer, layout: &EncounterLayout) {
+    use encounter_stage_palette as stage;
+
+    // 1. Vacío casi negro sobre el que se apoya todo lo demás.
+    framebuffer.buffer.fill(stage::BACKGROUND);
+
+    if layout.stage_width == 0 || layout.stage_height == 0 {
+        return;
+    }
+
+    let stage_bottom = layout.stage_y + layout.stage_height;
+
+    let horizon = layout.horizon_y();
+
+    // 2. Muro del fondo, desde el techo hasta el horizonte.
+    fill_rect(
+        framebuffer,
+        layout.stage_x,
+        layout.stage_y,
+        layout.stage_width,
+        horizon.saturating_sub(layout.stage_y),
+        stage::BACK_WALL,
+    );
+
+    // 3. Bahía central: el hueco iluminado detrás de la entidad.
+    let bay_width = layout.stage_width * 34 / 100;
+
+    let bay_x = layout.stage_x + (layout.stage_width - bay_width) / 2;
+
+    let bay_height = horizon.saturating_sub(layout.stage_y) * 82 / 100;
+
+    let bay_y = horizon.saturating_sub(bay_height);
+
+    draw_panel(
+        framebuffer,
+        bay_x,
+        bay_y,
+        bay_width,
+        bay_height,
+        stage::CENTRAL_BAY,
+        stage::DIM_BORDER,
+    );
+
+    // Luz interior: una franja alta que insinúa una lámpara sin
+    // introducir un degradado por píxel.
+    let light_width = bay_width.saturating_sub(48);
+
+    let light_height = bay_height / 6;
+
+    if light_width > 0 && light_height > 0 {
+        fill_rect(
+            framebuffer,
+            bay_x + 24,
+            bay_y + light_height / 2,
+            light_width,
+            light_height,
+            stage::INNER_LIGHT,
+        );
+    }
+
+    // 4. Columnas laterales, ancladas al horizonte.
+    let column_width = layout.stage_width * 9 / 100;
+
+    let column_height = horizon.saturating_sub(layout.stage_y);
+
+    for column_x in [
+        layout.stage_x,
+        (layout.stage_x + layout.stage_width).saturating_sub(column_width),
+    ] {
+        draw_panel(
+            framebuffer,
+            column_x,
+            layout.stage_y,
+            column_width,
+            column_height,
+            stage::CENTRAL_BAY,
+            stage::DIM_BORDER,
+        );
+
+        // 5. Óxido: dos marcas discretas por columna.
+        let rust_width = column_width.saturating_sub(16);
+
+        if rust_width > 0 {
+            for offset in [column_height / 3, column_height * 2 / 3] {
+                fill_rect(
+                    framebuffer,
+                    column_x + 8,
+                    layout.stage_y + offset,
+                    rust_width,
+                    4,
+                    stage::RUST,
+                );
+            }
+        }
+    }
+
+    // 6. Suelo.
+    fill_rect(
+        framebuffer,
+        layout.stage_x,
+        horizon,
+        layout.stage_width,
+        stage_bottom.saturating_sub(horizon),
+        stage::FLOOR,
+    );
+
+    // 7. Línea de horizonte.
+    fill_rect(
+        framebuffer,
+        layout.stage_x,
+        horizon,
+        layout.stage_width,
+        2,
+        stage::DIM_BORDER,
+    );
+
+    // 8. Cuatro líneas de profundidad, cada vez más separadas, para
+    //    sugerir perspectiva sin proyectar nada.
+    let floor_height = stage_bottom.saturating_sub(horizon);
+
+    for step in 1..=4usize {
+        let offset = floor_height * step * step / 20;
+
+        let line_y = horizon + offset;
+
+        if line_y + 2 >= stage_bottom {
+            break;
+        }
+
+        // Las líneas lejanas son más cortas que las cercanas.
+        let inset = layout.stage_width * (5 - step) / 24;
+
+        fill_rect(
+            framebuffer,
+            layout.stage_x + inset,
+            line_y,
+            layout.stage_width.saturating_sub(inset * 2),
+            2,
+            stage::FLOOR_LINE,
+        );
+    }
+
+    // 9. Zócalo inferior que cierra la arena.
+    fill_rect(
+        framebuffer,
+        layout.stage_x,
+        stage_bottom.saturating_sub(2),
+        layout.stage_width,
+        2,
+        stage::DIM_BORDER,
+    );
+}
+
+/// Dibuja una textura RGBA escalada por vecino más cercano.
+///
+/// El alfa se toma del byte superior: cero conserva el fondo, 255
+/// copia el color y los valores intermedios se mezclan.
+fn render_scaled_sprite(
+    framebuffer: &mut Framebuffer,
+    texture: &SpriteTexture,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+) {
+    let texture_width = texture.width();
+
+    let texture_height = texture.height();
+
+    if width == 0 || height == 0 || texture_width == 0 || texture_height == 0 {
+        return;
+    }
+
+    let framebuffer_width = framebuffer.width;
+
+    let framebuffer_height = framebuffer.height;
+
+    for row in 0..height {
+        let screen_y = y + row;
+
+        if screen_y >= framebuffer_height {
+            break;
+        }
+
+        let texture_y = (row * texture_height / height).min(texture_height - 1);
+
+        for column in 0..width {
+            let screen_x = x + column;
+
+            if screen_x >= framebuffer_width {
+                break;
+            }
+
+            let texture_x = (column * texture_width / width).min(texture_width - 1);
+
+            let texel = texture.sample(texture_x, texture_y);
+
+            let alpha = (texel >> 24) & 0xFF;
+
+            if alpha == 0 {
+                continue;
+            }
+
+            let index = screen_y * framebuffer_width + screen_x;
+
+            if alpha == 255 {
+                framebuffer.buffer[index] = texel & 0x00FF_FFFF;
+
+                continue;
+            }
+
+            let background = framebuffer.buffer[index];
+
+            let mix = |shift: u32| {
+                let source = (texel >> shift) & 0xFF;
+
+                let destination = (background >> shift) & 0xFF;
+
+                (destination * (255 - alpha) + source * alpha + 127) / 255
+            };
+
+            framebuffer.buffer[index] = (mix(16) << 16) | (mix(8) << 8) | mix(0);
+        }
+    }
+}
+
+/// Arena de combate: fondo industrial más la entidad centrada.
+///
+/// No depende del nivel, del laberinto ni de dónde estuviera mirando
+/// el jugador cuando se disparó el encuentro.
+fn render_encounter_stage(
+    framebuffer: &mut Framebuffer,
+    layout: &EncounterLayout,
+    entity_texture: &SpriteTexture,
+) {
+    draw_stage_background(framebuffer, layout);
+
+    let (x, y, width, height) = layout.entity_rect(entity_texture.width(), entity_texture.height());
+
+    render_scaled_sprite(framebuffer, entity_texture, x, y, width, height);
+}
+
+/// Composición completa del encuentro.
+///
+/// Arena propia arriba, entidad centrada, marco de texto y acciones
+/// abajo y un pie común. Recibe únicamente datos: la narrativa vive
+/// en `encounter` y la política de F6 se decide en `main`.
+#[allow(clippy::too_many_arguments)]
 pub fn render_encounter(
     framebuffer: &mut Framebuffer,
     entity_name: &str,
+    entity_texture: &SpriteTexture,
     text: &str,
     actions_title: &str,
     choices: &[EncounterChoice],
     selected_index: usize,
+    show_debug_close_hint: bool,
 ) {
     use terminal_palette as palette;
 
     let width = framebuffer.width;
     let height = framebuffer.height;
 
-    // Oscurecer la escena congelada sin borrarla.
-    for pixel in framebuffer.buffer.iter_mut() {
-        *pixel = scale_color_intensity(*pixel, ENCOUNTER_OVERLAY_LIGHT);
-    }
-
     let layout = EncounterLayout::new(width, height);
+
+    // La arena sustituye por completo la escena de exploración.
+    render_encounter_stage(framebuffer, &layout, entity_texture);
 
     // ----- Marco exterior -----
     draw_panel(
@@ -1604,7 +1954,12 @@ pub fn render_encounter(
         palette::BORDER,
     );
 
-    let keys = "W / S - ELEGIR    ENTER / E - CONFIRMAR    F6 - CERRAR";
+    // F6 solo se promete cuando main confirma que de verdad cierra.
+    let keys = if show_debug_close_hint {
+        "W / S - ELEGIR    ENTER / E - CONFIRMAR    F6 - CERRAR"
+    } else {
+        "W / S - ELEGIR    ENTER / E - CONFIRMAR"
+    };
 
     let keys_x = width.saturating_sub(text_width(keys, 1)) / 2;
 
@@ -3073,6 +3428,7 @@ mod encounter_screen_tests {
     };
     use crate::framebuffer::Framebuffer;
     use crate::game::encounter::{EncounterChoice, EncounterSession, SCP_173_ENCOUNTER};
+    use crate::texture::SpriteTexture;
 
     const WINDOW_WIDTH: usize = 1300;
     const WINDOW_HEIGHT: usize = 900;
@@ -3380,15 +3736,22 @@ mod encounter_screen_tests {
 
         let text = session.node().expect("el nodo debe existir").text;
 
+        let texture = SpriteTexture::from_file("./assets/sprites/scp_173.png")
+            .expect("el sprite de SCP-173 debe existir");
+
         for _ in 0..session.choices().len() {
-            render_encounter(
-                &mut framebuffer,
-                session.entity_name(),
-                text,
-                session.actions_title(),
-                session.choices(),
-                session.selected_index(),
-            );
+            for show_debug_close_hint in [false, true] {
+                render_encounter(
+                    &mut framebuffer,
+                    session.entity_name(),
+                    &texture,
+                    text,
+                    session.actions_title(),
+                    session.choices(),
+                    session.selected_index(),
+                    show_debug_close_hint,
+                );
+            }
 
             session.select_next();
         }
@@ -3848,6 +4211,352 @@ mod encounter_flash_render_tests {
                 pixel & !0x00FF_FFFF,
                 0,
                 "se escribió fuera de los canales RGB",
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod encounter_stage_tests {
+    use super::{
+        ENCOUNTER_STAGE_GAP, EncounterLayout, draw_stage_background, render_encounter,
+        render_encounter_stage, render_scaled_sprite, text_width,
+    };
+    use crate::framebuffer::Framebuffer;
+    use crate::game::encounter::{EncounterSession, SCP_173_ENCOUNTER};
+    use crate::texture::SpriteTexture;
+    use std::sync::OnceLock;
+
+    const WINDOW_WIDTH: usize = 1300;
+    const WINDOW_HEIGHT: usize = 900;
+
+    /// Color centinela para detectar píxeles heredados del frame previo.
+    const SENTINEL: u32 = 0x00FF00;
+
+    fn layout() -> EncounterLayout {
+        EncounterLayout::new(WINDOW_WIDTH, WINDOW_HEIGHT)
+    }
+
+    /// El PNG se decodifica una sola vez para toda la suite.
+    fn entity_texture() -> &'static SpriteTexture {
+        static TEXTURE: OnceLock<SpriteTexture> = OnceLock::new();
+
+        TEXTURE.get_or_init(|| {
+            SpriteTexture::from_file("./assets/sprites/scp_173.png")
+                .expect("el sprite de SCP-173 debe existir")
+        })
+    }
+
+    fn render_demo(framebuffer: &mut Framebuffer, show_debug_close_hint: bool) {
+        let session = EncounterSession::new(SCP_173_ENCOUNTER);
+
+        render_encounter(
+            framebuffer,
+            session.entity_name(),
+            entity_texture(),
+            session.current_text(),
+            session.actions_title(),
+            session.choices(),
+            session.selected_index(),
+            show_debug_close_hint,
+        );
+    }
+
+    // ----- Geometría de la arena -----
+
+    #[test]
+    fn the_stage_ends_before_the_panel() {
+        let layout = layout();
+
+        assert!(
+            layout.stage_y + layout.stage_height <= layout.frame_y,
+            "la arena invade el panel: {} > {}",
+            layout.stage_y + layout.stage_height,
+            layout.frame_y,
+        );
+    }
+
+    #[test]
+    fn the_stage_and_the_panel_keep_a_visible_gap() {
+        let layout = layout();
+
+        let separation = layout
+            .frame_y
+            .saturating_sub(layout.stage_y + layout.stage_height);
+
+        assert_eq!(separation, ENCOUNTER_STAGE_GAP);
+
+        assert!(separation > 0);
+    }
+
+    #[test]
+    fn the_stage_covers_the_upper_half_of_the_window() {
+        let layout = layout();
+
+        assert!(layout.stage_x > 0);
+
+        assert!(layout.stage_x + layout.stage_width <= WINDOW_WIDTH);
+
+        // La arena es la mitad superior real, no una franja simbólica.
+        assert!(layout.stage_height >= WINDOW_HEIGHT / 2);
+    }
+
+    // ----- Encaje de la entidad -----
+
+    #[test]
+    fn the_entity_fits_inside_the_stage() {
+        let layout = layout();
+
+        let texture = entity_texture();
+
+        let (x, y, width, height) = layout.entity_rect(texture.width(), texture.height());
+
+        assert!(x >= layout.stage_x);
+
+        assert!(x + width <= layout.stage_x + layout.stage_width);
+
+        assert!(y >= layout.stage_y);
+
+        assert!(y + height <= layout.stage_y + layout.stage_height);
+
+        // Y no queda diminuta: SCP-173 debe verse cerca de 340 px.
+        assert!((320..=360).contains(&height), "altura {height}");
+    }
+
+    #[test]
+    fn the_entity_respects_the_size_ceilings() {
+        let layout = layout();
+
+        for (texture_width, texture_height) in
+            [(320, 320), (100, 400), (400, 100), (1024, 1024), (7, 3)]
+        {
+            let (_, _, width, height) = layout.entity_rect(texture_width, texture_height);
+
+            assert!(
+                height <= layout.stage_height * 75 / 100,
+                "{texture_width}x{texture_height}: alto {height}",
+            );
+
+            assert!(
+                width <= WINDOW_WIDTH * 45 / 100,
+                "{texture_width}x{texture_height}: ancho {width}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_entity_keeps_its_aspect_ratio() {
+        let layout = layout();
+
+        for (texture_width, texture_height) in [(320, 320), (100, 400), (400, 100), (256, 512)] {
+            let (_, _, width, height) = layout.entity_rect(texture_width, texture_height);
+
+            let source = texture_width as f32 / texture_height as f32;
+
+            let drawn = width as f32 / height as f32;
+
+            assert!(
+                (source - drawn).abs() < 0.03,
+                "{texture_width}x{texture_height} se dibuja {width}x{height}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_entity_is_horizontally_centered() {
+        let layout = layout();
+
+        for (texture_width, texture_height) in [(320, 320), (100, 400), (400, 100)] {
+            let (x, _, width, _) = layout.entity_rect(texture_width, texture_height);
+
+            let left_gap = x - layout.stage_x;
+
+            let right_gap = (layout.stage_x + layout.stage_width) - (x + width);
+
+            assert!(
+                left_gap.abs_diff(right_gap) <= 1,
+                "{texture_width}x{texture_height}: {left_gap} vs {right_gap}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_degenerate_texture_produces_no_entity() {
+        let layout = layout();
+
+        for (texture_width, texture_height) in [(0, 320), (320, 0), (0, 0)] {
+            let (_, _, width, height) = layout.entity_rect(texture_width, texture_height);
+
+            assert_eq!((width, height), (0, 0));
+        }
+    }
+
+    // ----- Dibujo del sprite -----
+
+    #[test]
+    fn opaque_texels_are_copied_and_transparent_texels_keep_the_background() {
+        let layout = layout();
+
+        let texture = entity_texture();
+
+        let (x, y, width, height) = layout.entity_rect(texture.width(), texture.height());
+
+        let mut background = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        draw_stage_background(&mut background, &layout);
+
+        let mut framebuffer = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        render_encounter_stage(&mut framebuffer, &layout, texture);
+
+        let mut opaque_seen = 0usize;
+
+        let mut transparent_seen = 0usize;
+
+        for row in 0..height {
+            let texture_y = row * texture.height() / height;
+
+            for column in 0..width {
+                let texture_x = column * texture.width() / width;
+
+                let texel = texture.sample(texture_x, texture_y);
+
+                let index = (y + row) * WINDOW_WIDTH + (x + column);
+
+                let alpha = (texel >> 24) & 0xFF;
+
+                if alpha == 0 {
+                    transparent_seen += 1;
+
+                    assert_eq!(
+                        framebuffer.buffer[index], background.buffer[index],
+                        "el texel transparente en ({column}, {row}) borro el fondo",
+                    );
+                } else if alpha == 255 {
+                    opaque_seen += 1;
+
+                    assert_eq!(
+                        framebuffer.buffer[index],
+                        texel & 0x00FF_FFFF,
+                        "el texel opaco en ({column}, {row}) no se copio",
+                    );
+                }
+            }
+        }
+
+        assert!(opaque_seen > 1_000, "solo {opaque_seen} texeles opacos");
+
+        assert!(
+            transparent_seen > 1_000,
+            "solo {transparent_seen} texeles transparentes",
+        );
+    }
+
+    #[test]
+    fn the_scaled_sprite_never_writes_outside_the_framebuffer() {
+        let texture = entity_texture();
+
+        for (x, y, width, height) in [(1290, 890, 200, 200), (0, 0, 4000, 4000), (0, 0, 0, 0)] {
+            let mut framebuffer = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+            render_scaled_sprite(&mut framebuffer, texture, x, y, width, height);
+
+            assert_eq!(framebuffer.buffer.len(), WINDOW_WIDTH * WINDOW_HEIGHT);
+        }
+    }
+
+    // ----- Independencia del frame anterior -----
+
+    #[test]
+    fn the_stage_replaces_every_previous_pixel() {
+        let mut framebuffer = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        framebuffer.buffer.fill(SENTINEL);
+
+        render_demo(&mut framebuffer, false);
+
+        assert!(
+            !framebuffer.buffer.contains(&SENTINEL),
+            "quedo escena congelada debajo del encuentro",
+        );
+    }
+
+    #[test]
+    fn the_encounter_does_not_depend_on_what_was_rendered_before() {
+        // Dos "camaras" distintas: una pared pegada y un pasillo.
+        let mut looking_at_a_wall = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        looking_at_a_wall.buffer.fill(0x884422);
+
+        let mut looking_down_a_corridor = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        for (index, pixel) in looking_down_a_corridor.buffer.iter_mut().enumerate() {
+            *pixel = (index as u32).wrapping_mul(2_654_435_761) & 0x00FF_FFFF;
+        }
+
+        render_demo(&mut looking_at_a_wall, false);
+
+        render_demo(&mut looking_down_a_corridor, false);
+
+        assert_eq!(
+            looking_at_a_wall.buffer, looking_down_a_corridor.buffer,
+            "la composicion del encuentro depende del frame anterior",
+        );
+    }
+
+    #[test]
+    fn a_small_framebuffer_does_not_panic() {
+        for (width, height) in [(1, 1), (8, 8), (64, 40), (320, 200), (700, 500)] {
+            let mut framebuffer = Framebuffer::new(width, height);
+
+            render_demo(&mut framebuffer, true);
+
+            assert_eq!(framebuffer.buffer.len(), width * height);
+        }
+    }
+
+    // ----- Pie con y sin F6 -----
+
+    #[test]
+    fn both_footers_fit_inside_the_frame() {
+        let layout = layout();
+
+        for keys in [
+            "W / S - ELEGIR    ENTER / E - CONFIRMAR",
+            "W / S - ELEGIR    ENTER / E - CONFIRMAR    F6 - CERRAR",
+        ] {
+            assert!(
+                text_width(keys, 1) <= layout.frame_width,
+                "el pie no cabe: {keys}",
+            );
+        }
+    }
+
+    #[test]
+    fn the_debug_hint_only_appears_when_it_is_allowed() {
+        let mut without_hint = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        render_demo(&mut without_hint, false);
+
+        let mut with_hint = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        render_demo(&mut with_hint, true);
+
+        assert_ne!(
+            without_hint.buffer, with_hint.buffer,
+            "el pie no cambia al habilitar F6",
+        );
+
+        // La diferencia vive unicamente en la banda del pie.
+        let layout = layout();
+
+        for y in 0..layout.footer_y {
+            let row = y * WINDOW_WIDTH;
+
+            assert_eq!(
+                without_hint.buffer[row..row + WINDOW_WIDTH],
+                with_hint.buffer[row..row + WINDOW_WIDTH],
+                "la fila {y} cambio fuera del pie",
             );
         }
     }

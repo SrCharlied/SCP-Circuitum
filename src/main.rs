@@ -800,7 +800,29 @@ fn main() {
                 render_victory_screen(&mut framebuffer, victory_menu_option);
             }
 
-            GameState::Playing | GameState::Paused | GameState::Encounter => {
+            // El encuentro tiene composición propia: no se dibuja la
+            // escena de exploración detrás, así que tampoco se gasta
+            // raycasting en una imagen que nadie ve.
+            GameState::Encounter => {
+                let show_debug_close_hint = cfg!(debug_assertions)
+                    && can_close_debug_encounter(
+                        encounter_origin,
+                        encounter_session.is_lethal_locked(),
+                    );
+
+                render_encounter(
+                    &mut framebuffer,
+                    encounter_session.entity_name(),
+                    &scp_173_texture,
+                    encounter_session.current_text(),
+                    encounter_session.actions_title(),
+                    encounter_session.choices(),
+                    encounter_session.selected_index(),
+                    show_debug_close_hint,
+                );
+            }
+
+            GameState::Playing | GameState::Paused => {
                 let render_3d_start = Instant::now();
 
                 render_3d(
@@ -874,35 +896,17 @@ fn main() {
                     player.is_sprint_exhausted(),
                 );
 
-                // El panel del encuentro debe quedar legible aunque
-                // haya empezado con los ojos cerrados, así que allí
-                // no se dibuja ni la barra ni los párpados.
-                if game_state != GameState::Encounter {
-                    render_blink_bar(
-                        &mut framebuffer,
-                        blink_system.meter_ratio(),
-                        blink_system.is_closed(),
-                    );
+                render_blink_bar(
+                    &mut framebuffer,
+                    blink_system.meter_ratio(),
+                    blink_system.is_closed(),
+                );
 
-                    render_blink_overlay(&mut framebuffer, blink_system.closure_ratio());
-                }
+                render_blink_overlay(&mut framebuffer, blink_system.closure_ratio());
 
                 // Después de los párpados, para que siga legible.
                 if game_state == GameState::Paused {
                     render_pause_menu(&mut framebuffer, settings.target_fps());
-                }
-
-                // La escena queda congelada detrás del panel: se
-                // dibuja igual que en Playing y luego se atenúa.
-                if game_state == GameState::Encounter {
-                    render_encounter(
-                        &mut framebuffer,
-                        encounter_session.entity_name(),
-                        encounter_session.current_text(),
-                        encounter_session.actions_title(),
-                        encounter_session.choices(),
-                        encounter_session.selected_index(),
-                    );
                 }
             }
 
