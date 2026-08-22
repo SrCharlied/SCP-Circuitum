@@ -6,6 +6,7 @@ use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player};
 
 use crate::game::GameState;
 use crate::game::encounter::{EncounterPhase, EncounterUpdate};
+use crate::game::encounter_transition::entered_encounter;
 use crate::player::PlayerMotion;
 
 /// Pista ambiental que acompaña la exploración.
@@ -143,18 +144,6 @@ pub fn fight_music_action(state: GameState, already_playing: bool) -> FightMusic
 
         _ => FightMusicAction::Leave,
     }
-}
-
-/// Si este frame entra en un encuentro.
-///
-/// Compara el estado anterior con el actual, así que suena una sola
-/// vez por encuentro sin importar cómo se abrió: por proximidad o
-/// con F6. Volver a entrar más tarde vuelve a dispararlo.
-pub fn should_play_combat_sting(
-    previous_state: Option<GameState>,
-    current_state: GameState,
-) -> bool {
-    current_state == GameState::Encounter && previous_state != Some(GameState::Encounter)
 }
 
 /// Cada cuánto suena un paso según cómo se mueva el jugador.
@@ -437,7 +426,7 @@ impl AudioManager {
         // La entrada al encuentro se detecta aquí comparando con el
         // frame anterior, así que `main` no tiene que avisar desde
         // los dos sitios que pueden abrirlo.
-        let play_sting = should_play_combat_sting(self.previous_state, state);
+        let play_sting = entered_encounter(self.previous_state, state);
 
         // ----- Música ambiental -----
         match ambient_music_action(state, self.is_ambient_music_playing()) {
@@ -1078,9 +1067,12 @@ mod crack_tests {
 mod combat_audio_tests {
     use super::{
         AmbientMusicAction, COMBAT_STING_PATH, FIGHT_MUSIC_PATH, FightMusicAction,
-        ambient_music_action, fight_music_action, music_belongs_to, should_play_combat_sting,
+        ambient_music_action, fight_music_action, music_belongs_to,
     };
     use crate::game::GameState;
+    // El sting comparte detector con la transición visual, así que
+    // ambos arrancan en el mismo frame.
+    use crate::game::encounter_transition::entered_encounter;
 
     /// Todos los estados del juego, para barrer cada regla.
     const EVERY_STATE: [GameState; 9] = [
@@ -1162,17 +1154,17 @@ mod combat_audio_tests {
 
     #[test]
     fn the_sting_fires_when_entering_the_encounter() {
-        assert!(should_play_combat_sting(
+        assert!(entered_encounter(
             Some(GameState::Playing),
             GameState::Encounter
         ));
 
-        assert!(should_play_combat_sting(
+        assert!(entered_encounter(
             Some(GameState::Paused),
             GameState::Encounter
         ));
 
-        assert!(should_play_combat_sting(
+        assert!(entered_encounter(
             Some(GameState::Defeat),
             GameState::Encounter
         ));
@@ -1180,12 +1172,12 @@ mod combat_audio_tests {
 
     #[test]
     fn the_sting_fires_without_a_previous_state() {
-        assert!(should_play_combat_sting(None, GameState::Encounter));
+        assert!(entered_encounter(None, GameState::Encounter));
     }
 
     #[test]
     fn the_sting_does_not_repeat_while_the_encounter_lasts() {
-        assert!(!should_play_combat_sting(
+        assert!(!entered_encounter(
             Some(GameState::Encounter),
             GameState::Encounter
         ));
@@ -1199,7 +1191,7 @@ mod combat_audio_tests {
             }
 
             assert!(
-                !should_play_combat_sting(Some(GameState::Encounter), state),
+                !entered_encounter(Some(GameState::Encounter), state),
                 "el sting sonó al salir hacia {state:?}",
             );
         }
@@ -1214,13 +1206,13 @@ mod combat_audio_tests {
                 }
 
                 assert!(
-                    !should_play_combat_sting(Some(previous), current),
+                    !entered_encounter(Some(previous), current),
                     "el sting sonó en {previous:?} -> {current:?}",
                 );
             }
         }
 
-        assert!(!should_play_combat_sting(None, GameState::Welcome));
+        assert!(!entered_encounter(None, GameState::Welcome));
     }
 
     #[test]
@@ -1236,7 +1228,7 @@ mod combat_audio_tests {
 
         for (previous, current, expected) in sequence {
             assert_eq!(
-                should_play_combat_sting(previous, current),
+                entered_encounter(previous, current),
                 expected,
                 "falló la transición {previous:?} -> {current:?}",
             );

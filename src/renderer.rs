@@ -2151,6 +2151,38 @@ pub fn render_blink_bar(framebuffer: &mut Framebuffer, meter_ratio: f32, eyes_cl
     draw_text(framebuffer, label, label_x, label_y, 1, 0xD8D8E0);
 }
 
+/// Destello blanco que cubre la pantalla entera.
+///
+/// Es lo último que se dibuja del frame, así que tapa mundo, sprite,
+/// minimapa, HUD y panel por igual. Mezcla cada canal hacia el blanco
+/// con aritmética entera: no hay buffer intermedio ni alfa.
+pub fn render_encounter_flash(framebuffer: &mut Framebuffer, intensity: f32) {
+    let intensity = if intensity.is_finite() {
+        intensity.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+
+    if intensity <= 0.0 {
+        return;
+    }
+
+    // Una sola conversión para todo el frame.
+    let strength = (intensity * 255.0).round() as u32;
+
+    for pixel in framebuffer.buffer.iter_mut() {
+        let red = (*pixel >> 16) & 0xFF;
+
+        let green = (*pixel >> 8) & 0xFF;
+
+        let blue = *pixel & 0xFF;
+
+        let blend = |channel: u32| channel + ((255 - channel) * strength + 127) / 255;
+
+        *pixel = (blend(red) << 16) | (blend(green) << 8) | blend(blue);
+    }
+}
+
 /// Párpados cerrándose hacia el centro.
 ///
 /// Son dos rectángulos opacos, uno desde arriba y otro desde abajo,
@@ -3641,6 +3673,182 @@ mod blink_render_tests {
             }
 
             assert_eq!(framebuffer.buffer.len(), width * height);
+        }
+    }
+}
+
+#[cfg(test)]
+mod encounter_flash_render_tests {
+    use super::render_encounter_flash;
+    use crate::framebuffer::Framebuffer;
+
+    const WINDOW_WIDTH: usize = 1300;
+    const WINDOW_HEIGHT: usize = 900;
+
+    const WHITE: u32 = 0xFFFFFF;
+
+    /// Gris oscuro reconocible, con los tres canales distintos.
+    const DARK: u32 = 0x102030;
+
+    fn filled(color: u32) -> Framebuffer {
+        let mut framebuffer = Framebuffer::new(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+        framebuffer.buffer.fill(color);
+
+        framebuffer
+    }
+
+    fn channels(pixel: u32) -> (u32, u32, u32) {
+        ((pixel >> 16) & 0xFF, (pixel >> 8) & 0xFF, pixel & 0xFF)
+    }
+
+    #[test]
+    fn a_zero_intensity_does_not_touch_a_single_pixel() {
+        let mut framebuffer = filled(DARK);
+
+        render_encounter_flash(&mut framebuffer, 0.0);
+
+        assert!(framebuffer.buffer.iter().all(|pixel| *pixel == DARK));
+    }
+
+    #[test]
+    fn a_full_intensity_turns_everything_white() {
+        let mut framebuffer = filled(DARK);
+
+        render_encounter_flash(&mut framebuffer, 1.0);
+
+        assert!(
+            framebuffer.buffer.iter().all(|pixel| *pixel == WHITE),
+            "quedaron píxeles sin blanquear",
+        );
+    }
+
+    #[test]
+    fn a_half_intensity_lightens_a_dark_pixel() {
+        let mut framebuffer = filled(DARK);
+
+        render_encounter_flash(&mut framebuffer, 0.5);
+
+        let (red, green, blue) = channels(framebuffer.buffer[0]);
+
+        let (dark_red, dark_green, dark_blue) = channels(DARK);
+
+        assert!(red > dark_red, "el rojo no se aclaró");
+        assert!(green > dark_green, "el verde no se aclaró");
+        assert!(blue > dark_blue, "el azul no se aclaró");
+
+        // Y sin llegar al blanco.
+        assert!(red < 255 && green < 255 && blue < 255);
+    }
+
+    #[test]
+    fn a_half_intensity_keeps_a_white_pixel_white() {
+        let mut framebuffer = filled(WHITE);
+
+        render_encounter_flash(&mut framebuffer, 0.5);
+
+        assert!(framebuffer.buffer.iter().all(|pixel| *pixel == WHITE));
+    }
+
+    #[test]
+    fn the_blend_matches_the_expected_value() {
+        // Cada canal se acerca al blanco en proporción a la
+        // intensidad, con una tolerancia de un nivel por el redondeo.
+        for intensity in [0.25f32, 0.5, 0.75] {
+            let mut framebuffer = filled(DARK);
+
+            render_encounter_flash(&mut framebuffer, intensity);
+
+            let (red, green, blue) = channels(framebuffer.buffer[0]);
+
+            let (dark_red, dark_green, dark_blue) = channels(DARK);
+
+            for (result, original) in [(red, dark_red), (green, dark_green), (blue, dark_blue)] {
+                let expected = original as f32 + (255.0 - original as f32) * intensity;
+
+                assert!(
+                    (result as f32 - expected).abs() <= 1.0,
+                    "con intensidad {intensity} se esperaba {expected} y hubo {result}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn out_of_range_intensities_are_clamped() {
+        // Por debajo de cero no toca nada.
+        for intensity in [-0.5f32, -1000.0] {
+            let mut framebuffer = filled(DARK);
+
+            render_encounter_flash(&mut framebuffer, intensity);
+
+            assert!(framebuffer.buffer.iter().all(|pixel| *pixel == DARK));
+        }
+
+        // Por encima de uno blanquea del todo.
+        for intensity in [1.5f32, 1000.0] {
+            let mut framebuffer = filled(DARK);
+
+            render_encounter_flash(&mut framebuffer, intensity);
+
+            assert!(framebuffer.buffer.iter().all(|pixel| *pixel == WHITE));
+        }
+    }
+
+    #[test]
+    fn non_finite_intensities_are_treated_as_zero() {
+        for intensity in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut framebuffer = filled(DARK);
+
+            render_encounter_flash(&mut framebuffer, intensity);
+
+            assert!(
+                framebuffer.buffer.iter().all(|pixel| *pixel == DARK),
+                "una intensidad de {intensity} modificó píxeles",
+            );
+        }
+    }
+
+    #[test]
+    fn a_single_pixel_framebuffer_does_not_panic() {
+        let mut framebuffer = Framebuffer::new(1, 1);
+
+        framebuffer.buffer.fill(DARK);
+
+        for intensity in [0.0, 0.5, 1.0, f32::NAN] {
+            render_encounter_flash(&mut framebuffer, intensity);
+        }
+
+        assert_eq!(framebuffer.buffer.len(), 1);
+    }
+
+    #[test]
+    fn small_framebuffers_keep_their_size() {
+        for (width, height) in [(1, 1), (3, 2), (10, 5), (64, 64)] {
+            let mut framebuffer = Framebuffer::new(width, height);
+
+            render_encounter_flash(&mut framebuffer, 0.5);
+
+            assert_eq!(framebuffer.width, width);
+            assert_eq!(framebuffer.height, height);
+            assert_eq!(framebuffer.buffer.len(), width * height);
+        }
+    }
+
+    #[test]
+    fn the_flash_never_touches_bits_outside_rgb() {
+        let mut framebuffer = Framebuffer::new(4, 1);
+
+        framebuffer.buffer.fill(DARK);
+
+        render_encounter_flash(&mut framebuffer, 0.5);
+
+        for pixel in &framebuffer.buffer {
+            assert_eq!(
+                pixel & !0x00FF_FFFF,
+                0,
+                "se escribió fuera de los canales RGB",
+            );
         }
     }
 }

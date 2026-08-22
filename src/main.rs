@@ -20,6 +20,7 @@ use crate::game::encounter::{
     EdgeTrigger, EncounterInput, EncounterSession, EncounterUpdate, GameplayGate, GameplayStep,
     SCP_173_ENCOUNTER,
 };
+use crate::game::encounter_transition::{EncounterTransition, entered_encounter};
 use crate::game::encounter_trigger::{
     EncounterOrigin, ProximityEncounterTrigger, can_close_debug_encounter, scp_173_trigger_enabled,
 };
@@ -34,9 +35,9 @@ use crate::mouse_capture::{MouseCapture, should_capture_cursor};
 use crate::player::{MouseLook, PlayerMotion, process_events};
 use crate::renderer::{
     PlaneTable, WorldSprite, draw_text, render_3d, render_blink_bar, render_blink_overlay,
-    render_defeat_screen, render_encounter, render_level_selection, render_level_success,
-    render_level_transition, render_minimap, render_pause_menu, render_sprite, render_stamina_bar,
-    render_victory_screen, render_welcome_screen,
+    render_defeat_screen, render_encounter, render_encounter_flash, render_level_selection,
+    render_level_success, render_level_transition, render_minimap, render_pause_menu,
+    render_sprite, render_stamina_bar, render_victory_screen, render_welcome_screen,
 };
 use crate::texture::{SpriteTexture, TextureSet};
 
@@ -55,6 +56,12 @@ const BLINK_INTERVAL_SECONDS: f32 = 6.0;
 
 /// Cuánto permanecen cerrados los ojos.
 const BLINK_CLOSED_SECONDS: f32 = 0.22;
+
+/// Duración total del destello al entrar en un encuentro.
+const ENCOUNTER_FLASH_DURATION: f32 = 1.0;
+
+/// Cuánto se mantiene el blanco total antes de desvanecerse.
+const ENCOUNTER_FLASH_SOLID_DURATION: f32 = 0.15;
 
 fn main() {
     let window_width = 1300;
@@ -170,12 +177,22 @@ fn main() {
     // Ciclo de parpadeo: durante el cierre nadie observa a SCP-173.
     let mut blink_system = BlinkSystem::new(BLINK_INTERVAL_SECONDS, BLINK_CLOSED_SECONDS);
 
+    // Destello de entrada al encuentro.
+    let mut encounter_transition =
+        EncounterTransition::new(ENCOUNTER_FLASH_DURATION, ENCOUNTER_FLASH_SOLID_DURATION);
+
     while window.is_open() {
         let frame_start = Instant::now();
 
         let delta_time = frame_start.duration_since(previous_frame).as_secs_f32();
 
         previous_frame = frame_start;
+
+        // Se guarda antes del match para detectar después, en un
+        // solo punto, la entrada al encuentro.
+        let state_at_frame_start = game_state;
+
+        encounter_transition.update(delta_time);
 
         // Enter se resuelve una sola vez por frame. Mientras siga
         // pulsado tras una confirmación no vuelve a valer, así que
@@ -394,10 +411,17 @@ fn main() {
             }
 
             GameState::Encounter => {
+                // Mientras dura el destello el encuentro no acepta
+                // nada: ni avanza fases ni se puede cerrar. Sembrar
+                // el input cada frame hace que una tecla sostenida
+                // durante el flash tenga que soltarse antes de valer.
+                if encounter_transition.is_active() {
+                    encounter_session.seed_input_state(encounter_input);
+                }
                 // F6 solo retira lo que F6 abrió, y nunca una vez
                 // comprometida la muerte. El trigger no se rearma:
                 // el encuentro automático sigue pendiente.
-                if cfg!(debug_assertions)
+                else if cfg!(debug_assertions)
                     && window.is_key_pressed(Key::F6, KeyRepeat::No)
                     && can_close_debug_encounter(
                         encounter_origin,
@@ -723,6 +747,21 @@ fn main() {
             blink_system.sync_manual_key(manual_blink_down);
         }
 
+        // Punto único desde el que arranca el destello, con el estado
+        // ya asentado. Cubre por igual el trigger automático y F6 sin
+        // duplicar llamadas en sus ramas, y comparte detector con el
+        // audio para que sonido e imagen empiecen en el mismo frame.
+        if entered_encounter(Some(state_at_frame_start), game_state) {
+            encounter_transition.start();
+
+            println!(
+                "Encuentro: destello de {:.2} s.",
+                encounter_transition.remaining(),
+            );
+        } else if game_state != GameState::Encounter {
+            encounter_transition.cancel();
+        }
+
         // Punto único desde el que se toca el audio: la acción se
         // deriva del estado ya asentado en este frame, así que
         // llamarlo cada frame nunca reinicia ni duplica la pista.
@@ -877,6 +916,13 @@ fn main() {
                     transition_progress,
                 );
             }
+        }
+
+        // Lo último del frame: el destello tapa mundo, sprite,
+        // minimapa, HUD y panel por igual, y al desvanecerse revela
+        // el encuentro que ya está dibujado debajo.
+        if game_state == GameState::Encounter && encounter_transition.is_active() {
+            render_encounter_flash(&mut framebuffer, encounter_transition.intensity());
         }
 
         window

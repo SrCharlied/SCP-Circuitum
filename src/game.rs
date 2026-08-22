@@ -1,4 +1,5 @@
 pub mod encounter;
+pub mod encounter_transition;
 pub mod encounter_trigger;
 pub mod scp173;
 
