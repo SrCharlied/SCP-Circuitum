@@ -428,19 +428,22 @@ mod tests {
     // ----- Situación real del nivel 1 -----
 
     #[test]
-    fn the_real_spawns_are_too_far_apart_to_fire() {
+    fn the_real_spawns_are_safely_separated() {
         let maze = crate::maze::load_maze("./levels/level_01.txt", BLOCK_SIZE).0;
 
-        // Posiciones reales de arranque: 4 celdas de separación.
+        // Posiciones reales de arranque. Lo que importa no es la
+        // distancia exacta, sino que el encuentro no se dispare al
+        // desplegar y que el trigger siga pendiente.
         let player = Player::new(Vec2::new(150.0, 150.0), 0.0);
 
-        let scp_position = Vec2::new(550.0, 150.0);
+        let scp_position = Vec2::new(750.0, 750.0);
 
         let distance = (scp_position - player.pos).norm();
 
-        assert_eq!(distance, 400.0);
-
-        assert!(distance > RADIUS_CELLS * BLOCK_SIZE as f32);
+        assert!(
+            distance > RADIUS_CELLS * BLOCK_SIZE as f32,
+            "el encuentro no debe dispararse al cargar",
+        );
 
         let mut trigger = trigger();
 

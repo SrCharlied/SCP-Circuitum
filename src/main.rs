@@ -96,7 +96,7 @@ fn main() {
         .unwrap_or_else(|error| panic!("{error}"));
 
     let mut scp_173 = Scp173::new(
-        Vec2::new(550.0, 150.0),
+        Vec2::new(750.0, 750.0),
         120.0,
         scp_173_texture.width() as f32 / scp_173_texture.height() as f32,
     );

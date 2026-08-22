@@ -324,7 +324,7 @@ fn normalize_angle(angle: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Scp173, is_walkable};
+    use super::{COLLISION_RADIUS_CELLS, Scp173, is_walkable};
 
     use crate::maze::Maze;
     use crate::player::Player;
@@ -469,5 +469,42 @@ mod tests {
         assert!((scp_at_60_fps.pos.x - scp_at_120_fps.pos.x).abs() < 0.01);
 
         assert!((scp_at_60_fps.pos.y - scp_at_120_fps.pos.y).abs() < 0.01);
+    }
+
+    // ----- Aparición real en el nivel 1 -----
+
+    /// Blinda el spawn contra un cambio futuro del mapa: si alguien
+    /// mueve una pared encima de esa celda, la figura arrancaría
+    /// atascada y el BFS no tendría de dónde salir.
+    #[test]
+    fn the_real_spawn_stands_on_a_walkable_cell() {
+        let maze = crate::maze::load_maze("./levels/level_01.txt", BLOCK_SIZE).0;
+
+        let spawn = Vec2::new(750.0, 750.0);
+
+        let radius = BLOCK_SIZE as f32 * COLLISION_RADIUS_CELLS;
+
+        assert!(
+            is_walkable(&maze, spawn.x, spawn.y, radius, BLOCK_SIZE),
+            "SCP-173 aparece dentro de una pared en {spawn:?}",
+        );
+
+        // Y no queda encerrado: puede empezar a moverse hacia algún
+        // lado, que es lo que el BFS necesita.
+        let step = BLOCK_SIZE as f32;
+
+        let neighbours = [
+            (spawn.x + step, spawn.y),
+            (spawn.x - step, spawn.y),
+            (spawn.x, spawn.y + step),
+            (spawn.x, spawn.y - step),
+        ];
+
+        assert!(
+            neighbours
+                .iter()
+                .any(|(x, y)| is_walkable(&maze, *x, *y, radius, BLOCK_SIZE)),
+            "la celda de aparicion no conecta con ninguna vecina",
+        );
     }
 }
